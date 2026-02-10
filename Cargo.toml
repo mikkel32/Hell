@@ -1,0 +1,28 @@
+[package]
+name = "kawaii_cleaner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async Runtime & Concurrency
+tokio = { version = "1.35", features = ["full"] }
+
+# Terminal User Interface
+ratatui = "0.29"
+crossterm = "0.27"
+
+# System Information & Filesystem
+sysinfo = "0.30"
+walkdir = "2.4"
+directories = "5.0"
+humansize = "2.1"
+anyhow = "1.0"
+
+# Native Windows API
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_System_SystemInformation"
+]
