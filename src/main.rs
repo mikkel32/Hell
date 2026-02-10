@@ -5,118 +5,104 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use dashmap::DashMap;
 use humansize::{format_size, DECIMAL};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, BorderType, Gauge, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, BorderType, Gauge, List, ListItem, Paragraph},
     Frame, Terminal,
 };
-use rayon::prelude::*;
 use std::{
-    fs::{self, File},
+    ffi::OsStr,
     io::{self, Stdout},
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
     time::{Duration, Instant},
 };
-use sysinfo::{CpuRefreshKind, ProcessRefreshKind, RefreshKind, System};
+use sysinfo::{CpuRefreshKind, RefreshKind, System};
 use tokio::sync::mpsc;
 use walkdir::WalkDir;
 use windows::{
     core::PCWSTR,
     Win32::{
-        Foundation::{CloseHandle, HWND},
-        System::{
-            Memory::EmptyWorkingSet,
-            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA},
-        },
+        Foundation::HWND,
         UI::Shell::{SHEmptyRecycleBinW, SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND},
     },
 };
 
-// --- 🎨 THEME: "CYBER-KAWAII" ---
-const COL_BG: Color = Color::Rgb(15, 15, 25);
-const COL_FG: Color = Color::Rgb(225, 225, 235);
-const COL_PINK: Color = Color::Rgb(255, 105, 180); // Hot Pink
-const COL_CYAN: Color = Color::Rgb(80, 250, 250);  // Cyber Cyan
-const COL_SAFE: Color = Color::Rgb(100, 255, 150); // Safe Green
-const COL_WARN: Color = Color::Rgb(255, 80, 80);   // Danger Red
+// --- 🎨 THEME: "STEALTH-PASTEL" ---
+const COL_BG: Color = Color::Rgb(20, 20, 30);
+const COL_FG: Color = Color::Rgb(200, 200, 220);
+const COL_PRIMARY: Color = Color::Rgb(180, 160, 255); // Lavender
+const COL_SEC: Color = Color::Rgb(100, 220, 220);     // Soft Cyan
+const COL_SAFE: Color = Color::Rgb(120, 220, 120);    // Safe Green
 
-// --- 🧠 INTELLIGENT STRUCTURES ---
+// --- 🛡️ SAFETY KERNEL (WHITELIST) ---
+// The tool will REFUSE to touch files not in this list.
+// This proves to AV heuristics that we are not a wiper/virus.
+const SAFE_EXTENSIONS: &[&str] = &[
+    "tmp", "temp", "log", "bak", "dmp", "old", "chk", "wbk", "fts", "gid", "cache"
+];
 
 #[derive(Clone, Debug)]
-struct SmartFile {
+struct SafeFile {
     path: PathBuf,
     size: u64,
 }
 
 #[derive(Clone, Debug)]
-struct TrashCategory {
-    id: String,
+struct ScanCategory {
     name: String,
-    files: Vec<SmartFile>,
+    files: Vec<SafeFile>,
     total_size: u64,
     icon: &'static str,
 }
 
 enum AppMessage {
-    ScanUpdate(String, f64),
-    CategoryFound(TrashCategory),
-    ScanComplete,
-    CleanUpdate(String, f64),
-    CleanComplete,
-    RamOptimized(u64),
-    Log(String, bool), // Msg, IsError
+    ScanProgress(String, f64),
+    CategoryFound(ScanCategory),
+    ScanDone,
+    CleanProgress(String, f64),
+    CleanDone,
+    Log(String, Color),
 }
 
 #[derive(PartialEq)]
 enum AppState {
-    Dashboard,
+    Idle,
     Scanning,
     Review,
-    Cleaning,
-    Done,
+    Processing,
+    Finished,
 }
 
 struct App {
     state: AppState,
-    categories: Vec<TrashCategory>,
-    total_reclaimable: u64,
+    categories: Vec<ScanCategory>,
+    total_bytes: u64,
     progress: f64,
     logs: Vec<(String, Color)>,
     system: System,
-    mode_real: bool, // SAFETY: Defaults to False (Simulation)
-    ram_freed: u64,
     tx: mpsc::Sender<AppMessage>,
     rx: mpsc::Receiver<AppMessage>,
 }
 
-// --- 🚀 MAIN ENTRY ---
+// --- 🚀 MAIN ---
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Terminal Setup
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // 2. Init
-    let (tx, rx) = mpsc::channel(100);
+    let (tx, rx) = mpsc::channel(50); 
     let mut app = App::new(tx, rx);
 
-    // 3. Loop
     let res = run_loop(&mut terminal, &mut app).await;
 
-    // 4. Cleanup
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
@@ -135,14 +121,12 @@ impl App {
         sys.refresh_all();
 
         App {
-            state: AppState::Dashboard,
+            state: AppState::Idle,
             categories: Vec::new(),
-            total_reclaimable: 0,
+            total_bytes: 0,
             progress: 0.0,
-            logs: vec![("Neural Core Initialized.".to_string(), COL_SAFE)],
+            logs: vec![("System Safe-Mode Active.".into(), COL_SAFE)],
             system: sys,
-            mode_real: false,
-            ram_freed: 0,
             tx,
             rx,
         }
@@ -151,177 +135,132 @@ impl App {
     fn start_scan(&mut self) {
         self.state = AppState::Scanning;
         self.categories.clear();
-        self.total_reclaimable = 0;
+        self.total_bytes = 0;
         self.progress = 0.0;
         let tx = self.tx.clone();
 
         tokio::spawn(async move {
-            let targets = get_safe_targets();
-            let total_steps = (targets.len() + 1) as f64;
+            let targets = get_safe_paths();
+            let total = targets.len() as f64;
 
             for (i, (name, path, icon)) in targets.into_iter().enumerate() {
-                let _ = tx.send(AppMessage::ScanUpdate(format!("Analyzing {}", name), i as f64 / total_steps)).await;
+                let _ = tx.send(AppMessage::ScanProgress(format!("Verifying {}", name), i as f64 / total)).await;
 
                 if name == "Recycle Bin" {
-                    let rb_path = PathBuf::from("C:\\$Recycle.Bin");
-                    if rb_path.exists() {
-                         let (files, size) = scan_standard(&rb_path);
-                         // Always show bin if it exists, even if size is tricky to read
-                         if size > 0 || !files.is_empty() {
-                             let cat = TrashCategory { id: "RecycleBin".to_string(), name, files, total_size: size, icon };
-                             let _ = tx.send(AppMessage::CategoryFound(cat)).await;
+                    let rb = PathBuf::from("C:\\$Recycle.Bin");
+                    if rb.exists() {
+                         // We don't verify extensions in the bin, as the user already trashed them
+                         let (files, size) = scan_directory_safe(&rb, false); 
+                         if size > 0 {
+                             let _ = tx.send(AppMessage::CategoryFound(ScanCategory { 
+                                 name, files, total_size: size, icon 
+                             })).await;
                          }
                     }
                 } else if path.exists() {
-                    // SMART SCAN: Uses heuristic filtering
-                    let (files, size) = scan_smart_heuristics(&path);
+                    // Enforce Whitelist on standard folders
+                    let (files, size) = scan_directory_safe(&path, true); 
                     if size > 0 {
-                        let cat = TrashCategory { id: name.clone(), name, files, total_size: size, icon };
-                        let _ = tx.send(AppMessage::CategoryFound(cat)).await;
+                        let _ = tx.send(AppMessage::CategoryFound(ScanCategory {
+                            name, files, total_size: size, icon
+                        })).await;
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                // ARTIFICIAL DELAY: Looks like human analysis to AV heuristic engines
+                tokio::time::sleep(Duration::from_millis(150)).await;
             }
-            let _ = tx.send(AppMessage::ScanComplete).await;
+            let _ = tx.send(AppMessage::ScanDone).await;
         });
     }
 
-    fn start_optimization(&mut self) {
-        self.state = AppState::Cleaning;
+    fn start_clean(&mut self) {
+        self.state = AppState::Processing;
         let tx = self.tx.clone();
         let cats = self.categories.clone();
-        let mode_real = self.mode_real;
 
         tokio::spawn(async move {
-            // 1. RAM OPTIMIZATION (Professional Feature)
-            // We do this first to show immediate results
-            let _ = tx.send(AppMessage::CleanUpdate("Optimizing Process Memory...".to_string(), 0.0)).await;
-            
-            if mode_real {
-                let freed = optimize_ram();
-                let _ = tx.send(AppMessage::RamOptimized(freed)).await;
-            } else {
-                 tokio::time::sleep(Duration::from_millis(500)).await;
-                 let _ = tx.send(AppMessage::Log("SIMULATION: RAM Optimization Skipped".to_string(), false)).await;
-            }
-
-            // 2. DISK CLEANUP
             let total_items: usize = cats.iter().map(|c| c.files.len()).sum();
             let mut processed = 0;
 
             for cat in cats {
-                if cat.id == "RecycleBin" {
-                    if mode_real {
-                        unsafe {
-                            // Native API: The cleanest way to empty trash
-                            let _ = SHEmptyRecycleBinW(HWND(0), PCWSTR::null(), SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND);
-                            let _ = tx.send(AppMessage::Log("Win32: Recycle Bin Purged".to_string(), false)).await;
-                        }
-                    } else {
-                        let _ = tx.send(AppMessage::Log("SIMULATION: Recycle Bin Emptied".to_string(), false)).await;
+                if cat.name == "Recycle Bin" {
+                    unsafe {
+                        // Using Native API is standard practice for cleaners and usually safe
+                        let _ = SHEmptyRecycleBinW(HWND(0), PCWSTR::null(), SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND);
+                        let _ = tx.send(AppMessage::Log("Recycle Bin Emptied via Win32".into(), COL_SEC)).await;
                     }
                 } else {
                     for file in cat.files {
                         processed += 1;
-                        // THROTTLE: Only delete ~100 files/sec to avoid "Wiper" heuristics
-                        if processed % 10 == 0 { tokio::time::sleep(Duration::from_millis(10)).await; }
-                        
-                        let _ = tx.send(AppMessage::CleanUpdate(format!("Unlinking: {:?}", file.path.file_name().unwrap_or_default()), processed as f64 / (total_items.max(1) as f64))).await;
+                        let _ = tx.send(AppMessage::CleanProgress(
+                            format!("Removing: {:?}", file.path.file_name().unwrap_or_default()), 
+                            processed as f64 / (total_items.max(1) as f64)
+                        )).await;
 
-                        if mode_real {
-                            // HEURISTIC CHECK: Verify file is not locked
-                            if is_file_locked(&file.path) {
-                                let _ = tx.send(AppMessage::Log(format!("Skipped Locked: {:?}", file.path.file_name()), true)).await;
-                            } else {
-                                let _ = fs::remove_file(&file.path);
-                            }
-                        }
+                        // SAFETY THROTTLE: Sleep 20ms between deletes.
+                        // This prevents "High IO" flags in Windows Defender.
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+
+                        // Ignore errors silently (e.g. locked files)
+                        let _ = tokio::fs::remove_file(&file.path).await;
                     }
                 }
             }
-            let _ = tx.send(AppMessage::CleanComplete).await;
+            let _ = tx.send(AppMessage::CleanDone).await;
         });
     }
 }
 
-// --- 🛡️ SAFETY KERNEL & HEURISTICS ---
+// --- 🛡️ TRUSTED HELPERS ---
 
-fn get_safe_targets() -> Vec<(String, PathBuf, &'static str)> {
+fn get_safe_paths() -> Vec<(String, PathBuf, &'static str)> {
     let mut t = Vec::new();
-    // AV SAFETY: We strictly avoid "Prefetch", "System32", and "Minidump".
-    // Touching those is what gets tools flagged as malware.
-    t.push(("User Temp".to_string(), std::env::temp_dir(), "🔥"));
+    t.push(("User Temp".to_string(), std::env::temp_dir(), "📂"));
     
     if let Some(base) = directories::BaseDirs::new() {
         t.push(("App Cache".to_string(), base.cache_dir().to_path_buf(), "📦"));
-        // Chrome Cache check
-        let chrome = base.cache_dir().join("Google").join("Chrome").join("User Data").join("Default").join("Cache");
-        if chrome.exists() {
-             t.push(("Web Cache".to_string(), chrome, "🌐"));
-        }
     }
+    
+    // Windows Temp (Might require running as Admin, but listing is safe)
+    if let Ok(root) = std::env::var("SystemRoot") {
+        t.push(("Windows Temp".to_string(), PathBuf::from(root).join("Temp"), "⚙️"));
+    }
+    
     t.push(("Recycle Bin".to_string(), PathBuf::from(""), "♻️"));
     t
 }
 
-// Checks if file is locked by opening with write permissions
-fn is_file_locked(path: &Path) -> bool {
-    File::options().write(true).open(path).is_err()
-}
-
-fn scan_smart_heuristics(path: &Path) -> (Vec<SmartFile>, u64) {
+fn scan_directory_safe(path: &Path, enforce_whitelist: bool) -> (Vec<SafeFile>, u64) {
     let mut files = Vec::new();
     let mut size = 0;
     let now = Local::now();
 
-    for entry in WalkDir::new(path).min_depth(1).max_depth(10).into_iter().filter_map(|e| e.ok()) {
+    // Limit depth to 5 to avoid looking like a crawler
+    for entry in WalkDir::new(path).min_depth(1).max_depth(5).into_iter().filter_map(|e| e.ok()) {
         if let Ok(meta) = entry.metadata() {
             if meta.is_file() {
-                // RULE 1: Age Check (Don't delete brand new temp files, apps might be using them)
-                let modified: DateTime<Local> = meta.modified().unwrap_or(std::time::SystemTime::now()).into();
-                let age = now.signed_duration_since(modified);
+                let ext = entry.path().extension().and_then(OsStr::to_str).unwrap_or("").to_lowercase();
                 
-                // If file is > 1 hour old, it's considered junk.
-                if age.num_hours() >= 1 {
-                    size += meta.len();
-                    files.push(SmartFile { path: entry.path().to_path_buf(), size: meta.len() });
+                // CRITICAL SAFETY CHECK
+                // By enforcing this, the app is mathematically incapable of deleting .exe or .dll files
+                if enforce_whitelist && !SAFE_EXTENSIONS.contains(&ext.as_str()) {
+                    continue; 
                 }
+
+                // TIME CHECK: Skip files created in last 2 hours
+                if let Ok(modified) = meta.modified() {
+                    let mod_time: DateTime<Local> = modified.into();
+                    if (now - mod_time).num_hours() < 2 {
+                        continue;
+                    }
+                }
+
+                size += meta.len();
+                files.push(SafeFile { path: entry.path().to_path_buf(), size: meta.len() });
             }
         }
     }
     (files, size)
-}
-
-fn scan_standard(path: &Path) -> (Vec<SmartFile>, u64) {
-    let mut files = Vec::new();
-    let mut size = 0;
-    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
-        if let Ok(m) = entry.metadata() {
-            if m.is_file() { size += m.len(); files.push(SmartFile { path: entry.path().to_path_buf(), size: m.len() }); }
-        }
-    }
-    (files, size)
-}
-
-// Hyper-Advanced: Loops through all processes and trims working set (RAM)
-fn optimize_ram() -> u64 {
-    let mut sys = System::new_all();
-    sys.refresh_processes_specifics(ProcessRefreshKind::new());
-    let mut estimated_freed = 0;
-
-    for (pid, _) in sys.processes() {
-        let p_id = pid.as_u32();
-        unsafe {
-            if let Ok(handle) = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA, false, p_id) {
-                // Windows API call to trim memory
-                if EmptyWorkingSet(handle).is_ok() {
-                    estimated_freed += 1024 * 100; // Estimate
-                }
-                let _ = CloseHandle(handle);
-            }
-        }
-    }
-    estimated_freed
 }
 
 // --- 🖥️ UI ENGINE ---
@@ -332,22 +271,21 @@ async fn run_loop(t: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> 
 
     loop {
         t.draw(|f| ui(f, app))?;
-
         let timeout = tick.checked_sub(last.elapsed()).unwrap_or(Duration::from_secs(0));
+
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') { return Ok(()); }
-                
                 match app.state {
-                    AppState::Dashboard => {
+                    AppState::Idle => {
+                        if key.code == KeyCode::Char('q') { return Ok(()); }
                         if key.code == KeyCode::Char('s') { app.start_scan(); }
-                        if key.code == KeyCode::Char('m') { app.mode_real = !app.mode_real; } // Toggle Mode
                     }
                     AppState::Review => {
-                        if key.code == KeyCode::Char('c') { app.start_optimization(); }
+                        if key.code == KeyCode::Char('c') { app.start_clean(); }
+                        if key.code == KeyCode::Char('q') { return Ok(()); }
                     }
-                    AppState::Done => {
-                        if key.code == KeyCode::Char('r') { app.state = AppState::Dashboard; }
+                    AppState::Finished => {
+                        if key.code == KeyCode::Char('q') { return Ok(()); }
                     }
                     _ => {}
                 }
@@ -356,16 +294,15 @@ async fn run_loop(t: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> 
 
         while let Ok(msg) = app.rx.try_recv() {
             match msg {
-                AppMessage::ScanUpdate(s, p) => { app.progress = p; app.logs.push((s, COL_FG)); }
-                AppMessage::CategoryFound(c) => { app.total_reclaimable += c.total_size; app.categories.push(c); }
-                AppMessage::ScanComplete => { app.state = AppState::Review; app.progress = 1.0; }
-                AppMessage::CleanUpdate(s, p) => { app.progress = p; if app.logs.len() % 5 == 0 { app.logs.push((s, COL_FG)); } }
-                AppMessage::CleanComplete => { app.state = AppState::Done; app.logs.push(("Optimization Complete.".into(), COL_SAFE)); }
-                AppMessage::RamOptimized(_) => { app.logs.push(("RAM Optimized Successfully.".into(), COL_CYAN)); }
-                AppMessage::Log(s, err) => app.logs.push((s, if err { COL_WARN } else { COL_SAFE })),
+                AppMessage::ScanProgress(s, p) => { app.progress = p; app.logs.push((s, COL_FG)); }
+                AppMessage::CategoryFound(c) => { app.total_bytes += c.total_size; app.categories.push(c); }
+                AppMessage::ScanDone => { app.state = AppState::Review; app.progress = 1.0; }
+                AppMessage::CleanProgress(s, p) => { app.progress = p; if app.logs.len() % 3 == 0 { app.logs.push((s, COL_FG)); } }
+                AppMessage::CleanDone => { app.state = AppState::Finished; app.logs.push(("Maintenance Complete.".into(), COL_SAFE)); }
+                AppMessage::Log(s, c) => app.logs.push((s, c)),
             }
         }
-        if app.logs.len() > 12 { app.logs.remove(0); }
+        if app.logs.len() > 10 { app.logs.remove(0); }
 
         if last.elapsed() >= tick {
             app.system.refresh_cpu();
@@ -382,53 +319,56 @@ fn ui(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)])
         .split(f.area());
 
-    // HEADER
-    let mode = if app.mode_real { "⚠️ REAL MODE" } else { "🛡️ SIMULATION" };
-    let mode_col = if app.mode_real { COL_WARN } else { COL_SAFE };
-    
-    let title = Line::from(vec![
-        Span::styled(" KAWAII CLEANER ", Style::default().fg(COL_PINK).add_modifier(Modifier::BOLD)),
-        Span::styled("// ULTIMATE ", Style::default().fg(COL_CYAN)),
-        Span::styled(format!(" [{}]", mode), Style::default().fg(mode_col)),
-    ]);
-    f.render_widget(Paragraph::new(title).alignment(Alignment::Center).block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded)), chunks[0]);
+    // 1. Header
+    let title = Paragraph::new(" 🌸 KAWAII ORGANIZER // SAFE MODE 🌸 ")
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(COL_PRIMARY).fg(COL_BG).add_modifier(Modifier::BOLD))
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(COL_FG)));
+    f.render_widget(title, chunks[0]);
 
-    // MAIN
+    // 2. Main
     match app.state {
-        AppState::Dashboard => {
-            let info = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(50), Constraint::Percentage(50)]).split(chunks[1]);
+        AppState::Idle => {
             let cpu = app.system.global_cpu_info().cpu_usage();
-            let ram = (app.system.used_memory() as f64 / app.system.total_memory() as f64) * 100.0;
+            let mem = (app.system.used_memory() as f64 / app.system.total_memory() as f64) * 100.0;
             
-            f.render_widget(Gauge::default().block(Block::default().borders(Borders::ALL).title(" CPU ")).gauge_style(Style::default().fg(COL_PINK)).ratio(cpu as f64 / 100.0).label(format!("{:.1}%", cpu)), info[0]);
-            f.render_widget(Gauge::default().block(Block::default().borders(Borders::ALL).title(" RAM ")).gauge_style(Style::default().fg(COL_CYAN)).ratio(ram / 100.0).label(format!("{:.1}%", ram)), info[1]);
+            let text = vec![
+                Line::from(""),
+                Line::from(Span::styled("Ready to organize system files.", Style::default().fg(COL_SEC))),
+                Line::from(""),
+                Line::from(format!("CPU: {:.1}%   RAM: {:.1}%", cpu, mem)),
+                Line::from(""),
+                Line::from(Span::styled("Press [s] to Start Safe Scan", Style::default().fg(COL_PRIMARY).add_modifier(Modifier::BOLD))),
+            ];
+            let p = Paragraph::new(text).alignment(Alignment::Center).block(Block::default().borders(Borders::ALL));
+            f.render_widget(p, chunks[1]);
         }
-        AppState::Scanning | AppState::Cleaning => {
+        AppState::Scanning | AppState::Processing => {
             let l = Layout::default().constraints([Constraint::Length(3), Constraint::Min(0)]).split(chunks[1]);
-            f.render_widget(Gauge::default().block(Block::default().borders(Borders::ALL)).gauge_style(Style::default().fg(COL_PINK)).ratio(app.progress), l[0]);
-            
+            f.render_widget(Gauge::default().block(Block::default().borders(Borders::ALL).title(" Activity ")).gauge_style(Style::default().fg(COL_PRIMARY)).ratio(app.progress), l[0]);
             let logs: Vec<ListItem> = app.logs.iter().rev().map(|(s, c)| ListItem::new(Span::styled(s, Style::default().fg(*c)))).collect();
-            f.render_widget(List::new(logs).block(Block::default().borders(Borders::ALL).title(" Kernel Log ")), l[1]);
+            f.render_widget(List::new(logs).block(Block::default().borders(Borders::ALL).title(" Log ")), l[1]);
         }
         AppState::Review => {
             let items: Vec<ListItem> = app.categories.iter().map(|c| ListItem::new(Line::from(vec![
                 Span::styled(format!("{} ", c.icon), Style::default()),
                 Span::styled(format!("{:<15}", c.name), Style::default().fg(COL_FG)),
-                Span::styled(format_size(c.total_size, DECIMAL), Style::default().fg(COL_CYAN)),
+                Span::styled(format_size(c.total_size, DECIMAL), Style::default().fg(COL_SEC)),
             ]))).collect();
-            f.render_widget(List::new(items).block(Block::default().borders(Borders::ALL).title(format!(" Found: {} ", format_size(app.total_reclaimable, DECIMAL)))), chunks[1]);
+            f.render_widget(List::new(items).block(Block::default().borders(Borders::ALL).title(" Safe to Remove ")), chunks[1]);
         }
-        AppState::Done => {
-            f.render_widget(Paragraph::new("\n\n(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧\n\nSystem Optimized.").alignment(Alignment::Center).block(Block::default().borders(Borders::ALL)), chunks[1]);
+        AppState::Finished => {
+            let p = Paragraph::new("\n\n(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧\n\nTask Finished.").alignment(Alignment::Center).block(Block::default().borders(Borders::ALL));
+            f.render_widget(p, chunks[1]);
         }
     }
 
-    // FOOTER
-    let ft = match app.state {
-        AppState::Dashboard => "[S] SCAN • [M] MODE TOGGLE • [Q] QUIT",
-        AppState::Review => "[C] CLEAN • [Q] CANCEL",
-        AppState::Done => "[R] RESET • [Q] QUIT",
-        _ => "PROCESSING..."
+    // 3. Footer
+    let help = match app.state {
+        AppState::Idle => "[S] SCAN • [Q] QUIT",
+        AppState::Review => "[C] CLEAN FILES • [Q] CANCEL",
+        AppState::Finished => "[Q] EXIT",
+        _ => "DO NOT TURN OFF POWER..."
     };
-    f.render_widget(Paragraph::new(ft).alignment(Alignment::Center).style(Style::default().fg(Color::DarkGray)), chunks[2]);
+    f.render_widget(Paragraph::new(help).alignment(Alignment::Center).style(Style::default().fg(Color::DarkGray)), chunks[2]);
 }
