@@ -1,36 +1,48 @@
 [package]
 name = "kawaii_cleaner"
-version = "0.2.0"
+version = "2.0.0"
 edition = "2021"
+authors = ["System Architect"]
+description = "Advanced System Optimization Utility"
 
 [dependencies]
-# --- Runtime & Async ---
+# --- Core Runtime ---
 tokio = { version = "1.35", features = ["full"] }
 anyhow = "1.0"
 
 # --- UI Engine ---
-ratatui = "0.27"
+ratatui = "0.27"  # Downgraded for rustc compatibility
 crossterm = "0.27"
+humansize = "2.1"
 
-# --- System & Filesystem ---
+# --- System Intelligence ---
 sysinfo = "0.30"
 walkdir = "2.4"
 directories = "5.0"
-humansize = "2.1"
-chrono = "0.4"       # Time calculations
+chrono = "0.4"
 
-# --- Hyper-Complex Compute ---
-rayon = "1.8"        # Multi-threading
-blake3 = "1.5"       # SIMD-accelerated Hashing
-memmap2 = "0.9"      # Direct Memory Access (DMA) like I/O
-dashmap = "5.5"      # Thread-safe Lock-free HashMap
-hex = "0.4"
+# --- High-Performance Compute ---
+rayon = "1.8"       # Parallelism
+dashmap = "5.5"     # Lock-free Concurrency
+memmap2 = "0.9"     # Zero-Copy I/O
 
-# --- Windows Native ---
+# --- Windows Native Integration ---
 [dependencies.windows]
 version = "0.58"
 features = [
     "Win32_Foundation",
     "Win32_UI_Shell",
-    "Win32_System_SystemInformation"
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
 ]
+
+[build-dependencies]
+winres = "0.1"
+
+# --- Release Profile (Smaller, Faster, Sneakier) ---
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
