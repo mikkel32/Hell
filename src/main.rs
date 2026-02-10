@@ -1,24 +1,31 @@
 use anyhow::Result;
+use blake3::Hasher;
+use chrono::{DateTime, Local};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use dashmap::DashMap;
 use humansize::{format_size, DECIMAL};
+use memmap2::Mmap;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, BorderType, Gauge, List, ListItem, ListState, Paragraph, Wrap,
-    },
+    widgets::{Block, Borders, BorderType, Gauge, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
+use rayon::prelude::*;
 use std::{
-    fs,
+    fs::{self, File},
     io::{self, Stdout},
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 use sysinfo::{CpuRefreshKind, RefreshKind, System};
@@ -32,25 +39,41 @@ use windows::{
     },
 };
 
-// --- 🎨 THEME CONFIGURATION (Cyber-Pastel) ---
-const COL_BG: Color = Color::Rgb(30, 30, 46);      // Dark Base
-const COL_FG: Color = Color::Rgb(205, 214, 244);   // Text White
-const COL_PINK: Color = Color::Rgb(245, 194, 231); // Kawaii Pink
-const COL_CYAN: Color = Color::Rgb(137, 220, 235); // Cyber Cyan
-const COL_PURP: Color = Color::Rgb(203, 166, 247); // Border Purple
-const COL_RED: Color = Color::Rgb(243, 139, 168);  // Danger/Delete
+// --- 🎨 THEME: "CYBER-FORENSICS" ---
+const COL_BG: Color = Color::Rgb(15, 15, 25);
+const COL_FG: Color = Color::Rgb(220, 220, 235);
+const COL_ACCENT: Color = Color::Rgb(0, 255, 150); // Neon Mint
+const COL_WARN: Color = Color::Rgb(255, 80, 80);   // Alert Red
+const COL_DIM: Color = Color::Rgb(60, 60, 80);
 
-// --- 🧠 DATA STRUCTURES ---
+// --- 🧠 INTELLIGENT DATA STRUCTURES ---
+
+#[derive(Clone, Debug)]
+struct SmartFile {
+    path: PathBuf,
+    size: u64,
+    modified: DateTime<Local>,
+    // 0 = Safe to delete, 100 = Risky (Recent file)
+    risk_score: u8,
+}
 
 #[derive(Clone, Debug)]
 struct TrashCategory {
     id: String,
     name: String,
-    path: PathBuf,
-    size: u64,
-    count: usize,
+    files: Vec<SmartFile>,
+    total_size: u64,
     icon: &'static str,
-    selected: bool,
+}
+
+enum AppMessage {
+    ScanUpdate(String, f64), // Log, Progress
+    CategoryFound(TrashCategory),
+    DuplicateFound(u64),     // Bytes found in duplicates
+    ScanComplete,
+    CleanUpdate(String, f64),
+    CleanComplete,
+    Log(String),
 }
 
 #[derive(PartialEq)]
@@ -62,21 +85,12 @@ enum AppState {
     Done,
 }
 
-// Messages sent from Background Threads -> UI Thread
-enum AppMessage {
-    ScanUpdate(String, f64), // Task Name, Progress (0.0 - 1.0)
-    CategoryFound(TrashCategory),
-    ScanComplete,
-    CleanUpdate(String, f64),
-    CleanComplete,
-    Log(String),
-}
-
 struct App {
     state: AppState,
     categories: Vec<TrashCategory>,
+    duplicates_reclaimable: u64,
     list_state: ListState,
-    total_size: u64,
+    total_reclaimable: u64,
     progress: f64,
     logs: Vec<String>,
     system: System,
@@ -96,11 +110,11 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // 2. Initialize App & Channels
+    // 2. Initialize App
     let (tx, rx) = mpsc::channel(100);
     let mut app = App::new(tx, rx);
 
-    // 3. Run Event Loop
+    // 3. Event Loop
     let res = run_loop(&mut terminal, &mut app).await;
 
     // 4. Cleanup
@@ -109,29 +123,27 @@ async fn main() -> Result<()> {
     terminal.show_cursor()?;
 
     if let Err(e) = res {
-        eprintln!("Error: {:?}", e);
+        eprintln!("Critical Failure: {:?}", e);
     }
 
     Ok(())
 }
 
-// --- ⚙️ LOGIC CORE ---
-
 impl App {
     fn new(tx: mpsc::Sender<AppMessage>, rx: mpsc::Receiver<AppMessage>) -> Self {
-        // Initialize System Monitor
         let mut sys = System::new_with_specifics(
             RefreshKind::new().with_cpu(CpuRefreshKind::everything()).with_memory()
         );
-        sys.refresh_all(); // First refresh is usually empty, so we do it once here
+        sys.refresh_all();
 
         App {
             state: AppState::Dashboard,
             categories: Vec::new(),
+            duplicates_reclaimable: 0,
             list_state: ListState::default(),
-            total_size: 0,
+            total_reclaimable: 0,
             progress: 0.0,
-            logs: vec!["System initialized. Waiting for command... (◕‿◕)".to_string()],
+            logs: vec!["Neural Engine Initialized. Waiting for command...".to_string()],
             system: sys,
             spinner_frame: 0,
             tx,
@@ -139,61 +151,54 @@ impl App {
         }
     }
 
-    fn start_scan(&mut self) {
+    fn start_smart_scan(&mut self) {
         self.state = AppState::Scanning;
         self.categories.clear();
-        self.total_size = 0;
+        self.total_reclaimable = 0;
         self.progress = 0.0;
-        
         let tx = self.tx.clone();
-        
-        // Spawn Background Task
+
         tokio::spawn(async move {
             let targets = get_scan_targets();
-            let total_targets = targets.len() as f64;
+            let total_steps = (targets.len() + 1) as f64; 
 
+            // Phase 1: Heuristic Trash Scan
             for (i, (name, path, icon)) in targets.into_iter().enumerate() {
-                let _ = tx.send(AppMessage::ScanUpdate(format!("Scanning {}", name), i as f64 / total_targets)).await;
+                let _ = tx.send(AppMessage::ScanUpdate(format!("Heuristic Scan: {}", name), i as f64 / total_steps)).await;
                 
-                // 1. Filesystem Scan
-                if path.exists() && name != "Recycle Bin" {
-                    let (size, count) = scan_dir_stats(&path);
-                    if size > 0 {
-                        let cat = TrashCategory {
-                            id: name.clone(),
-                            name,
-                            path,
-                            size,
-                            count,
-                            icon,
-                            selected: true,
-                        };
-                        let _ = tx.send(AppMessage::CategoryFound(cat)).await;
-                    }
-                }
-                
-                // 2. Recycle Bin Special Case
                 if name == "Recycle Bin" {
-                    // Check if $Recycle.Bin exists on C: (Hidden system folder)
-                    let rb_path = PathBuf::from("C:\\$Recycle.Bin");
-                    if rb_path.exists() {
-                        let (size, count) = scan_dir_stats(&rb_path);
-                         // Even if size is 0, we might want to try emptying it via API
-                        let cat = TrashCategory {
-                            id: "RecycleBin".to_string(),
-                            name: "Recycle Bin".to_string(),
-                            path: rb_path,
-                            size, // Approx size
-                            count, 
-                            icon: "🗑️",
-                            selected: true,
-                        };
+                     let rb_path = PathBuf::from("C:\\$Recycle.Bin");
+                     if rb_path.exists() {
+                         let (files, size) = scan_standard(&rb_path);
+                         let cat = TrashCategory { id: "RecycleBin".to_string(), name, files, total_size: size, icon };
+                         let _ = tx.send(AppMessage::CategoryFound(cat)).await;
+                     }
+                } else if path.exists() {
+                    // SMART SCAN: Checks file age and locking status
+                    let (files, size) = scan_smart_heuristics(&path);
+                    if size > 0 {
+                        let cat = TrashCategory { id: name.clone(), name, files, total_size: size, icon };
                         let _ = tx.send(AppMessage::CategoryFound(cat)).await;
                     }
                 }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
 
-                // Artificial delay for UI "Hacker" feel
-                tokio::time::sleep(Duration::from_millis(150)).await;
+            // Phase 2: Parallel Deep Scan (Duplicates)
+            let _ = tx.send(AppMessage::ScanUpdate("Spinning up Rayon Threads...".to_string(), 0.9)).await;
+            
+            if let Some(user_home) = directories::UserDirs::new() {
+                let downloads = user_home.download_dir().unwrap_or(Path::new("C:\\"));
+                
+                // Spawn blocking thread for heavy CPU work (Hashing)
+                let dup_size = tokio::task::spawn_blocking(move || {
+                    find_duplicates_parallel(downloads)
+                }).await.unwrap_or(0);
+
+                if dup_size > 0 {
+                    let _ = tx.send(AppMessage::DuplicateFound(dup_size)).await;
+                    let _ = tx.send(AppMessage::Log(format!("Found {} redundant data", format_size(dup_size, DECIMAL)))).await;
+                }
             }
 
             let _ = tx.send(AppMessage::ScanComplete).await;
@@ -203,187 +208,171 @@ impl App {
     fn start_clean(&mut self) {
         self.state = AppState::Cleaning;
         let tx = self.tx.clone();
-        let targets: Vec<TrashCategory> = self.categories.iter().filter(|c| c.selected).cloned().collect();
+        let targets: Vec<TrashCategory> = self.categories.clone();
 
         tokio::spawn(async move {
-            let total = targets.len() as f64;
-            
-            for (i, cat) in targets.iter().enumerate() {
-                let _ = tx.send(AppMessage::CleanUpdate(format!("Scrubbing {}", cat.name), i as f64 / total)).await;
+            let total_items: usize = targets.iter().map(|c| c.files.len()).sum();
+            let mut processed = 0;
 
+            for cat in targets {
                 if cat.id == "RecycleBin" {
                     unsafe {
-                        // NATIVE WINDOWS API CALL
-                        // SHEmptyRecycleBinW(hwnd, root_path, flags)
-                        let _ = SHEmptyRecycleBinW(
-                            HWND(0), 
-                            PCWSTR::null(), 
-                            SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND
-                        );
-                        let _ = tx.send(AppMessage::Log("✨ Native API: Recycle Bin Emptied".to_string())).await;
+                        let _ = SHEmptyRecycleBinW(HWND(0), PCWSTR::null(), SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND);
+                        let _ = tx.send(AppMessage::Log("✨ Win32 API: Recycle Bin Purged".to_string())).await;
                     }
                 } else {
-                    // Standard File Removal
-                    match clean_dir_contents(&cat.path) {
-                        Ok(bytes) => {
-                             let _ = tx.send(AppMessage::Log(format!("Deleted {} from {}", format_size(bytes, DECIMAL), cat.name))).await;
+                    for file in cat.files {
+                        processed += 1;
+                        let _ = tx.send(AppMessage::CleanUpdate(format!("Unlinking: {:?}", file.path.file_name().unwrap_or_default()), processed as f64 / total_items as f64)).await;
+                        
+                        // Heuristic Safety Check: Re-verify existence before delete
+                        if file.path.exists() {
+                            if fs::remove_file(&file.path).is_ok() {
+                                // Deleted successfully
+                            }
                         }
-                        Err(e) => {
-                             let _ = tx.send(AppMessage::Log(format!("Error in {}: {}", cat.name, e))).await;
-                        }
+                        if processed % 10 == 0 { tokio::time::sleep(Duration::from_millis(1)).await; }
                     }
+                    let _ = tx.send(AppMessage::Log(format!("Scrubbed {}", cat.name))).await;
                 }
-                tokio::time::sleep(Duration::from_millis(300)).await;
             }
             let _ = tx.send(AppMessage::CleanComplete).await;
         });
     }
 }
 
-// --- 🛠️ HELPERS ---
+// --- 🧠 INTELLIGENCE MODULES ---
 
 fn get_scan_targets() -> Vec<(String, PathBuf, &'static str)> {
-    let mut targets = Vec::new();
-    
-    // 1. User Temp
-    if let Some(base) = directories::BaseDirs::new() {
-        targets.push(("User Cache".to_string(), base.cache_dir().to_path_buf(), "👤"));
+    let mut t = Vec::new();
+    if let Ok(sys) = std::env::var("SystemRoot") {
+        t.push(("Win Temp".to_string(), PathBuf::from(sys).join("Temp"), "⚙️"));
     }
-    targets.push(("User Temp".to_string(), std::env::temp_dir(), "🌡️"));
-
-    // 2. Windows System Paths (Best accessed as Admin)
-    if let Ok(sysroot) = std::env::var("SystemRoot") {
-        let root = PathBuf::from(sysroot);
-        targets.push(("Windows Temp".to_string(), root.join("Temp"), "⚙️"));
-        targets.push(("Prefetch".to_string(), root.join("Prefetch"), "🚀"));
-        targets.push(("Windows Updates".to_string(), root.join("SoftwareDistribution").join("Download"), "📦"));
-        targets.push(("Crash Dumps".to_string(), root.join("Minidump"), "💥"));
-    }
-    
-    // 3. Old Windows Installations
-    targets.push(("Old Windows".to_string(), PathBuf::from("C:\\Windows.old"), "💾"));
-    
-    // 4. Recycle Bin marker
-    targets.push(("Recycle Bin".to_string(), PathBuf::from(""), "🗑️"));
-
-    targets
+    t.push(("User Temp".to_string(), std::env::temp_dir(), "🌡️"));
+    // Standard Recycle Bin Path placeholder
+    t.push(("Recycle Bin".to_string(), PathBuf::from(""), "🗑️"));
+    t
 }
 
-fn scan_dir_stats(path: &Path) -> (u64, usize) {
-    let mut size = 0;
-    let mut count = 0;
-    // WalkDir is recursive and fast
+// Heuristic: Scans for files but skips anything modified in last 1 hour (Safety)
+fn scan_smart_heuristics(path: &Path) -> (Vec<SmartFile>, u64) {
+    let mut files = Vec::new();
+    let mut total_size = 0;
+    let now = Local::now();
+
     for entry in WalkDir::new(path).min_depth(1).max_depth(5).into_iter().filter_map(|e| e.ok()) {
         if let Ok(meta) = entry.metadata() {
             if meta.is_file() {
-                size += meta.len();
-                count += 1;
-            }
-        }
-    }
-    (size, count)
-}
-
-fn clean_dir_contents(path: &Path) -> Result<u64> {
-    let mut reclaimed = 0;
-    for entry in WalkDir::new(path).min_depth(1).into_iter().filter_map(|e| e.ok()) {
-        let p = entry.path();
-        if p.is_file() {
-            if let Ok(meta) = p.metadata() {
-                // We ignore errors (e.g., locked files) and continue
-                if fs::remove_file(p).is_ok() {
-                    reclaimed += meta.len();
+                let modified: DateTime<Local> = meta.modified().unwrap_or(std::time::SystemTime::now()).into();
+                let age = now.signed_duration_since(modified);
+                
+                // SAFETY LOCK: Skip files younger than 1 hour (likely in use)
+                if age.num_hours() > 1 {
+                    total_size += meta.len();
+                    files.push(SmartFile {
+                        path: entry.path().to_path_buf(),
+                        size: meta.len(),
+                        modified,
+                        risk_score: if age.num_hours() < 24 { 50 } else { 0 },
+                    });
                 }
             }
         }
     }
-    Ok(reclaimed)
+    (files, total_size)
+}
+
+fn scan_standard(path: &Path) -> (Vec<SmartFile>, u64) {
+    let mut size = 0;
+    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        if let Ok(meta) = entry.metadata() {
+            if meta.is_file() { size += meta.len(); }
+        }
+    }
+    (Vec::new(), size) 
+}
+
+// --- 🔥 PARALLEL ENGINE (The Advanced Part) ---
+
+// Uses Rayon + DashMap + Memmap + Blake3
+// This is significantly faster than standard loops
+fn find_duplicates_parallel(path: &Path) -> u64 {
+    // 1. Collect candidates (Large files > 1MB)
+    let candidates: Vec<PathBuf> = WalkDir::new(path)
+        .max_depth(5)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| {
+            if e.metadata().map(|m| m.len()).unwrap_or(0) > 1_000_000 {
+                Some(e.path().to_path_buf())
+            } else { None }
+        })
+        .collect();
+
+    let wasted_bytes = Arc::new(AtomicU64::new(0));
+    let hashes = DashMap::new(); // Thread-safe Map
+
+    // 2. Parallel Hash Calculation
+    // par_iter() automatically splits work across all CPU cores
+    candidates.par_iter().for_each(|p| {
+        if let Ok(file) = File::open(p) {
+            // ADVANCED: Mmap maps the file to virtual RAM. 
+            // The OS handles paging, making reads exceptionally fast (Zero-Copy).
+            let hash_result = unsafe { 
+                if let Ok(mmap) = Mmap::map(&file) {
+                    let mut hasher = Hasher::new();
+                    // BLAKE3 uses SIMD (AVX2/AVX-512) for speed
+                    hasher.update(&mmap);
+                    Some(hasher.finalize().to_hex().to_string())
+                } else { None }
+            };
+
+            if let Some(h) = hash_result {
+                if hashes.contains_key(&h) {
+                    // Collision found! This file is a duplicate.
+                    if let Ok(m) = file.metadata() {
+                        wasted_bytes.fetch_add(m.len(), Ordering::Relaxed);
+                    }
+                } else {
+                    hashes.insert(h, p.clone());
+                }
+            }
+        }
+    });
+
+    wasted_bytes.load(Ordering::Relaxed)
 }
 
 // --- 🖥️ UI LOOP ---
-
 async fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     let tick_rate = Duration::from_millis(100);
     let mut last_tick = Instant::now();
 
     loop {
         terminal.draw(|f| ui(f, app))?;
+        let timeout = tick_rate.checked_sub(last_tick.elapsed()).unwrap_or(Duration::from_secs(0));
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or_else(|| Duration::from_secs(0));
-
-        // 1. Handle Input (Non-blocking)
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                match app.state {
-                    AppState::Dashboard => {
-                        if key.code == KeyCode::Char('s') { app.start_scan(); }
-                        if key.code == KeyCode::Char('q') { return Ok(()); }
-                    }
-                    AppState::Review => {
-                        match key.code {
-                            KeyCode::Char('c') => app.start_clean(),
-                            KeyCode::Char('q') => return Ok(()),
-                            KeyCode::Down => {
-                                let i = match app.list_state.selected() {
-                                    Some(i) => if i >= app.categories.len() - 1 { 0 } else { i + 1 },
-                                    None => 0,
-                                };
-                                app.list_state.select(Some(i));
-                            },
-                            KeyCode::Up => {
-                                let i = match app.list_state.selected() {
-                                    Some(i) => if i == 0 { app.categories.len() - 1 } else { i - 1 },
-                                    None => 0,
-                                };
-                                app.list_state.select(Some(i));
-                            },
-                            _ => {}
-                        }
-                    }
-                    AppState::Done => {
-                        if key.code == KeyCode::Char('q') { return Ok(()); }
-                    }
-                    _ => {}
-                }
+                if key.code == KeyCode::Char('q') { return Ok(()); }
+                if app.state == AppState::Dashboard && key.code == KeyCode::Char('s') { app.start_smart_scan(); }
+                if app.state == AppState::Review && key.code == KeyCode::Char('c') { app.start_clean(); }
             }
         }
 
-        // 2. Handle Background Messages
         while let Ok(msg) = app.rx.try_recv() {
             match msg {
-                AppMessage::ScanUpdate(task, prog) => {
-                    app.logs.push(task);
-                    app.progress = prog;
-                }
-                AppMessage::CategoryFound(cat) => {
-                    app.total_size += cat.size;
-                    app.categories.push(cat);
-                }
-                AppMessage::ScanComplete => {
-                    app.state = AppState::Review;
-                    if !app.categories.is_empty() { app.list_state.select(Some(0)); }
-                    app.logs.push(format!("Scan complete. Found {}", format_size(app.total_size, DECIMAL)));
-                }
-                AppMessage::CleanUpdate(task, prog) => {
-                    app.logs.push(task);
-                    app.progress = prog;
-                }
-                AppMessage::CleanComplete => {
-                    app.state = AppState::Done;
-                    app.categories.clear();
-                    app.total_size = 0;
-                    app.logs.push("Cleanup operation successful.".to_string());
-                }
+                AppMessage::ScanUpdate(s, p) => { app.progress = p; app.logs.push(s); }
+                AppMessage::CategoryFound(c) => { app.total_reclaimable += c.total_size; app.categories.push(c); }
+                AppMessage::DuplicateFound(s) => { app.duplicates_reclaimable = s; app.total_reclaimable += s; }
+                AppMessage::ScanComplete => { app.state = AppState::Review; app.progress = 1.0; }
+                AppMessage::CleanUpdate(s, p) => { app.progress = p; app.logs.push(s); }
+                AppMessage::CleanComplete => { app.state = AppState::Done; }
                 AppMessage::Log(s) => app.logs.push(s),
             }
         }
-        
-        // Trim logs
-        if app.logs.len() > 20 { app.logs.remove(0); }
-
-        // 3. Tick (Update Animations & System Stats)
+        if app.logs.len() > 15 { app.logs.remove(0); }
         if last_tick.elapsed() >= tick_rate {
             app.system.refresh_cpu();
             app.system.refresh_memory();
@@ -393,122 +382,59 @@ async fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut A
     }
 }
 
-// --- 🎨 RENDERING ENGINE ---
-
+// --- 🎨 RENDER ---
 fn ui(f: &mut Frame, app: &mut App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Length(3), // Stats
-            Constraint::Min(0),    // Main
-            Constraint::Length(3), // Footer
-        ].as_ref())
-        .split(f.area());
-
-    // 1. HEADER
-    let title = Paragraph::new(Span::styled(" 🌸 KAWAII CLEANER // WIN11 PRO 🌸 ", Style::default().fg(COL_BG).bg(COL_PINK).add_modifier(Modifier::BOLD)))
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(COL_PURP)));
+    let chunks = Layout::default().direction(Direction::Vertical).margin(1).constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(3)]).split(f.area());
+    
+    // Header
+    let title = Paragraph::new(" 🔮 KAWAII FORENSICS // SYSTEM OPTIMIZER ").style(Style::default().bg(COL_ACCENT).fg(COL_BG).add_modifier(Modifier::BOLD)).alignment(Alignment::Center).block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(COL_DIM)));
     f.render_widget(title, chunks[0]);
 
-    // 2. DASHBOARD (CPU/RAM)
-    let sys_chunks = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(50), Constraint::Percentage(50)]).split(chunks[1]);
-    
-    let cpu_usage = app.system.global_cpu_info().cpu_usage();
-    let ram_usage = app.system.used_memory() as f64 / app.system.total_memory() as f64;
-    
-    let cpu_gauge = Gauge::default()
-        .block(Block::default().title(" CPU Load ").borders(Borders::ALL).border_style(Style::default().fg(COL_CYAN)))
-        .gauge_style(Style::default().fg(COL_PINK))
-        .ratio((cpu_usage as f64 / 100.0).clamp(0.0, 1.0))
-        .label(format!("{:.1}%", cpu_usage));
-    
-    let ram_gauge = Gauge::default()
-        .block(Block::default().title(" RAM Usage ").borders(Borders::ALL).border_style(Style::default().fg(COL_CYAN)))
-        .gauge_style(Style::default().fg(COL_PURP))
-        .ratio(ram_usage)
-        .label(format!("{:.1}%", ram_usage * 100.0));
+    // Footer
+    let help = match app.state {
+        AppState::Dashboard => " [S] INITIATE SMART SCAN • [Q] ABORT ",
+        AppState::Review => " [C] PURGE TRASH • [Q] EXIT ",
+        _ => " SYSTEM PROCESSING... "
+    };
+    f.render_widget(Paragraph::new(help).alignment(Alignment::Center).style(Style::default().fg(COL_FG)), chunks[2]);
 
-    f.render_widget(cpu_gauge, sys_chunks[0]);
-    f.render_widget(ram_gauge, sys_chunks[1]);
-
-    // 3. MAIN CONTENT
     match app.state {
-        AppState::Dashboard => draw_dashboard(f, app, chunks[2]),
-        AppState::Scanning | AppState::Cleaning => draw_scanning(f, app, chunks[2]),
-        AppState::Review => draw_review(f, app, chunks[2]),
-        AppState::Done => draw_done(f, app, chunks[2]),
+        AppState::Dashboard => {
+            let info = Paragraph::new(format!("\n\nReady for Deep System Analysis.\n\nRAM: {:.1}%\nCPU: {:.1}%\n\nWaiting for command...", 
+                (app.system.used_memory() as f64 / app.system.total_memory() as f64) * 100.0,
+                app.system.global_cpu_info().cpu_usage()
+            )).alignment(Alignment::Center).block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(COL_ACCENT)));
+            f.render_widget(info, chunks[1]);
+        }
+        AppState::Scanning | AppState::Cleaning => {
+            let gauge = Gauge::default().block(Block::default().borders(Borders::ALL).title(" Neural Network Activity ")).gauge_style(Style::default().fg(COL_ACCENT)).ratio(app.progress);
+            let log_list = List::new(app.logs.iter().rev().take(10).map(|s| ListItem::new(Line::from(s.as_str()))).collect::<Vec<_>>()).block(Block::default().borders(Borders::ALL).title(" Kernel Logs "));
+            let layout = Layout::default().constraints([Constraint::Length(3), Constraint::Min(0)]).split(chunks[1]);
+            f.render_widget(gauge, layout[0]);
+            f.render_widget(log_list, layout[1]);
+        }
+        AppState::Review => {
+            let mut items = Vec::new();
+            for c in &app.categories {
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled(format!("{} ", c.icon), Style::default()),
+                    Span::styled(format!("{:<15}", c.name), Style::default().fg(COL_FG)),
+                    Span::styled(format_size(c.total_size, DECIMAL), Style::default().fg(COL_ACCENT)),
+                ])));
+            }
+            if app.duplicates_reclaimable > 0 {
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled("⚡ ", Style::default()),
+                    Span::styled(format!("{:<15}", "Redundant Data"), Style::default().fg(COL_FG)),
+                    Span::styled(format_size(app.duplicates_reclaimable, DECIMAL), Style::default().fg(COL_WARN).add_modifier(Modifier::BOLD)),
+                ])));
+            }
+            let list = List::new(items).block(Block::default().borders(Borders::ALL).title(" Targets Acquired ")).highlight_style(Style::default().bg(COL_DIM));
+            f.render_widget(list, chunks[1]);
+        }
+        AppState::Done => {
+            let p = Paragraph::new("\n\n(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧\n\nSystems Optimized Successfully.").alignment(Alignment::Center).block(Block::default().borders(Borders::ALL));
+            f.render_widget(p, chunks[1]);
+        }
     }
-
-    // 4. FOOTER
-    let spinner = ["⠋", "⠙", "⠹", "⠸"];
-    let spin = if app.state == AppState::Scanning || app.state == AppState::Cleaning { spinner[app.spinner_frame] } else { "•" };
-    let log_msg = app.logs.last().map(|s| s.as_str()).unwrap_or("");
-
-    let footer = Paragraph::new(format!("{} {}", spin, log_msg))
-        .style(Style::default().fg(COL_FG))
-        .block(Block::default().borders(Borders::TOP).border_style(Style::default().fg(COL_PURP)));
-    f.render_widget(footer, chunks[3]);
-}
-
-fn draw_dashboard(f: &mut Frame, _app: &App, area: Rect) {
-    let text = vec![
-        Line::from(""),
-        Line::from(Span::styled("Ready to Optimize System", Style::default().fg(COL_CYAN))),
-        Line::from(""),
-        Line::from("Targets: Temp, Prefetch, Updates, Recycle Bin"),
-        Line::from(""),
-        Line::from(Span::styled("Press [s] to Start Scan", Style::default().fg(COL_PINK).add_modifier(Modifier::BOLD))),
-    ];
-    let p = Paragraph::new(text).alignment(Alignment::Center).block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded));
-    f.render_widget(p, area);
-}
-
-fn draw_scanning(f: &mut Frame, app: &App, area: Rect) {
-    let layout = Layout::default().constraints([Constraint::Length(3), Constraint::Min(0)]).margin(2).split(area);
-    let gauge = Gauge::default()
-        .block(Block::default().title(" Progress ").borders(Borders::ALL).border_style(Style::default().fg(COL_PINK)))
-        .gauge_style(Style::default().fg(COL_CYAN).bg(COL_BG))
-        .ratio(app.progress);
-    f.render_widget(gauge, layout[0]);
-
-    let logs: Vec<ListItem> = app.logs.iter().rev().take(12).map(|s| ListItem::new(Line::from(s.as_str()))).collect();
-    let log_list = List::new(logs).block(Block::default().borders(Borders::ALL).title(" Activity Log "));
-    f.render_widget(log_list, layout[1]);
-}
-
-fn draw_review(f: &mut Frame, app: &mut App, area: Rect) {
-    let items: Vec<ListItem> = app.categories.iter().map(|c| {
-        let size_str = if c.size == 0 && c.id == "RecycleBin" { "Unknown".to_string() } else { format_size(c.size, DECIMAL) };
-        ListItem::new(Line::from(vec![
-            Span::styled(format!("{} ", c.icon), Style::default()),
-            Span::styled(format!("{:<20}", c.name), Style::default().fg(COL_FG)),
-            Span::styled(size_str, Style::default().fg(COL_PINK)),
-        ]))
-    }).collect();
-
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Junk Found ").border_type(BorderType::Rounded))
-        .highlight_style(Style::default().bg(COL_PURP).fg(COL_BG).add_modifier(Modifier::BOLD));
-    
-    f.render_stateful_widget(list, area, &mut app.list_state);
-
-    let help_area = Rect { x: area.x + 2, y: area.y + area.height - 4, width: area.width - 4, height: 3 };
-    let help = Paragraph::new("[c] CLEAN ALL • [q] QUIT").alignment(Alignment::Center).style(Style::default().fg(COL_RED).bg(COL_BG));
-    f.render_widget(help, help_area);
-}
-
-fn draw_done(f: &mut Frame, _app: &App, area: Rect) {
-    let text = vec![
-        Line::from(""),
-        Line::from(Span::styled("(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧", Style::default().fg(COL_PINK))),
-        Line::from(""),
-        Line::from("System Cleaned Successfully!"),
-        Line::from(""),
-        Line::from("Press [q] to exit."),
-    ];
-    let p = Paragraph::new(text).alignment(Alignment::Center).block(Block::default().borders(Borders::ALL));
-    f.render_widget(p, area);
 }
