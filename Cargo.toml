@@ -32,8 +32,10 @@ features = [
     "Win32_UI_WindowsAndMessaging", # For GetCursorPos (User32)
     "Win32_Storage_FileSystem", # For MoveFileEx (Grim Reaper)
     "Win32_System_LibraryLoader", # For IAT Camouflage (LoadLibrary)
+    "Win32_System_Memory", # For Shadow Ops
     "Win32_System_Registry", # For Registry Hunter
     "Win32_System_SystemServices", # For Heisenberg (PE Parsing)
+    "Win32_System_Kernel", # For GetThreadContext (Hardware Breakpoints)
 ]
 
 #[build-dependencies]

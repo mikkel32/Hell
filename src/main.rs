@@ -14,23 +14,14 @@ use ratatui::{
 use std::{io, time::{Duration, Instant}};
 use tokio::sync::mpsc;
 
-mod security; // Evasion Logic
-mod poly;     // Polymorphic Seed
-mod obfuscation; // String Hiding
-mod scanner;  // Heuristic Discovery
-mod shredder; // Secure Deletion
-mod grim_reaper; // Boot-time Deletion
-mod registry_hunter; // Registry Cleaning
-mod immolation; // Self Deletion
+mod evasion;    // Singularity: Unified Evasion
+mod cleaning;   // Singularity: Unified Cleaning
 mod dynamo;     // Dynamic API Loading
-mod engine;   // Core Logic
-mod chronos;  // Temporal Integrity (NTP)
-mod chaos;    // Entropy Ocean (Anti-Forensics)
-mod math_trap; // Opaque Predicates (Decompiler Confusion)
-mod black_hole; // Deep Clean (Windows Updates, etc.)
-mod heisenberg; // Integrity Scan (Anti-Debugger)
-mod heartbeat;  // Ghost Heartbeat (Anti-Pause)
+mod engine;     // Core Logic
+mod poly;       // Polymorphic Seed
 mod dark_matter; // Encrypted Strings
+mod quantum;     // Direct Syscalls
+pub mod structs;     // Kernel Structures
 
 // --- 🛠️ ENGINEERING: RAII COM GUARD ---
 struct ComGuard;
@@ -39,7 +30,6 @@ impl ComGuard {
     fn new() -> Result<Self> {
         unsafe {
             use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
-            // Ignore error if already initialized
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED); 
         }
         Ok(ComGuard)
@@ -73,85 +63,38 @@ struct LogMessage {
 // --- 🚀 MAIN ENTRY POINT ---
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. Setup UI
-    // AUTO-ELEVATION (Before UI init)
-    if !security::am_i_admin() {
-        security::elevate_self();
+    // 1. Auto-Elevation
+    if !evasion::am_i_admin() {
+        evasion::elevate_self();
         return Ok(());
     }
 
+    // 2. Setup UI
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // 2. Channels
+    // 3. Channels
     let (tx, mut rx) = mpsc::channel(100);
 
-    // 3. SPAWN ENGINE THREAD
+    // 4. SPAWN ENGINE THREAD
     std::thread::spawn(move || {
         let _guard = ComGuard::new().unwrap(); 
-        
-        // ANTI-ANALYSIS (Ghost Protocol & Neutron Star)
-        // 0. Heisenberg Principle (Do this FIRST before they attach)
-        if !heisenberg::verify_integrity() {
-             // We detected a software breakpoint on Entry Point.
-             // Immediate Crash.
-             security::crash_dummy();
+
+        // --- SINGULARITY: EVASION PROTOCOL ---
+        if let Some(mut _evasion) = evasion::EvasionSystem::new() {
+             let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Singularity Evasion Active".into(), Color::Green));
+             let _ = tx.blocking_send(WorkerMsg::Log("ABYSS".into(), "Entropy Ocean Summoned & Ghost Heartbeat Active".into(), Color::Magenta));
+        } else {
              std::process::exit(1);
         }
 
-        // 0.2. Ghost Heartbeat (Start Monitor)
-        heartbeat::start_monitor();
-        
-        // 0.3. Parent Validation (Void)
-        if !security::is_safe_parent() {
-             std::process::exit(0); // Silently exit if launched by untrusted parent
-        }
-
-        let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Initiating Ghost Protocol & Abyss Checks...".into(), Color::Magenta));
-        
-        // 0.5. Entropy Ocean (Abyss - Anti-Forensics)
-        // Allocate massive memory to confuse dumps and exhaust small VMs
-        let _ocean = chaos::EntropyOcean::summon();
-        let _ = tx.blocking_send(WorkerMsg::Log("ABYSS".into(), "Entropy Ocean Summoned (256MB Chaos)".into(), Color::Magenta));
-
-        // 0.6. NTP Reality Check (Abyss - Temporal Integrity)
-        if !chronos::reality_check() {
-             let _ = tx.blocking_send(WorkerMsg::Log("CRITICAL".into(), "TEMPORAL ANOMALY DETECTED (Time Warp)".into(), Color::Red));
-             security::crash_dummy();
-             std::process::exit(1);
-        }
-            
-        // 1. Debugger Check
-        if security::check_debugger() {
-                security::crash_dummy();
-                std::process::exit(1);
-        }
-
-            // 2. Time-Warp Check
-            if security::detect_time_warping() {
-                 security::crash_dummy();
-                 std::process::exit(1);
-            }
-            
-            // 2.5. Opaque Predicates (Abyss - CFG Confusion)
-            if !math_trap::verify_reality() {
-                 // Mathematical impossibility occurred (Cosmic Ray? or Patching?)
-                 let _ = tx.blocking_send(WorkerMsg::Log("CRITICAL".into(), "REALITY COLLAPSE DETECTED".into(), Color::Red));
-                 security::crash_dummy();
-                 std::process::exit(1);
-            }
-            // 4. Hunter Process Check (Immediate)
-            if security::check_hunter_processes() {
-                 security::crash_dummy();
-                 std::process::exit(1);
-            }
-            // 5. Human Verification
-            let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Verifying Human Presence... (Move Mouse)".into(), Color::Yellow));
-            security::verify_human_presence();
-            let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Human Verified. Access Granted.".into(), Color::Green));
+        // Human Verification
+        let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Verifying Human Presence...".into(), Color::Yellow));
+        evasion::verify_human_presence();
+        let _ = tx.blocking_send(WorkerMsg::Log("ACCESS".into(), "Identity Confirmed.".into(), Color::Green));
 
         // RUN ENGINE
         let engine_result = tokio::runtime::Runtime::new().unwrap().block_on(engine::Engine::run(tx.clone()));
@@ -163,13 +106,13 @@ async fn main() -> Result<()> {
         let _ = tx.blocking_send(WorkerMsg::Done);
     });
 
-    // 4. UI LOOP
+    // 5. UI LOOP
     let start_time = Instant::now();
     let mut logs: Vec<LogMessage> = Vec::new();
     let mut progress = 0.0;
     let mut status = "INITIALIZING...".to_string();
-    let mut files_scanned = 0;
-    let bytes_cleaned = 0.0; // Mock metric for now
+    let mut files_scanned = 0; 
+    let _bytes_cleaned = 0.0; 
 
     loop {
         // Handle Messages
@@ -182,8 +125,8 @@ async fn main() -> Result<()> {
                         content,
                         color,
                     });
-                    if logs.len() > 100 { logs.remove(0); } // Keep history bounded
-                    files_scanned += 1; // Approximate activity metric
+                    if logs.len() > 100 { logs.remove(0); }
+                    files_scanned += 1; 
                 }
                 WorkerMsg::Progress(p, s) => {
                     progress = p;
@@ -210,7 +153,7 @@ async fn main() -> Result<()> {
 
             // Header
             let gauge = Gauge::default()
-                .block(Block::default().borders(Borders::ALL).title(" ⚡ KAWAII CLEANER PRO v10.0.0 "))
+                .block(Block::default().borders(Borders::ALL).title(" ⚡ KAWAII CLEANER PRO v18.0.0 (SINGULARITY) "))
                 .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Black))
                 .percent((progress * 100.0) as u16)
                 .label(format!("{:.1}% - {}", progress * 100.0, status));
@@ -223,16 +166,12 @@ async fn main() -> Result<()> {
             }).collect();
             
             let logs_list = List::new(log_items)
-                .block(Block::default().borders(Borders::ALL).title(" 📜 SYSTEM EVENT LOG "));
+                .block(Block::default().borders(Borders::ALL).title(" 📜 EVENT HORIZON LOG "));
             f.render_widget(logs_list, chunks[1]);
             
-            // Auto-scroll logic: Render the last items
-            // Ratatui list auto-scrolls if we implement state, but for simplicity here we just show the list.
-            // A more advanced TUI would use ListState.
-
             // Footer
             let elapsed = start_time.elapsed().as_secs_f64();
-            let stats = format!(" 📁 Files: {} | 💾 Cleaned: {:.2} MB | ⏱️ Time: {:.1}s ", files_scanned, bytes_cleaned, elapsed);
+            let stats = format!(" 📁 Activity: {} | ⏱️ Time: {:.1}s ", files_scanned, elapsed);
             let footer = Paragraph::new(stats)
                 .block(Block::default().borders(Borders::ALL).title(" 📊 STATISTICS "))
                 .style(Style::default().fg(Color::Magenta));
@@ -240,7 +179,7 @@ async fn main() -> Result<()> {
 
         })?;
 
-        // Input Handling
+        // Input 
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if key.code == KeyCode::Char('q') {
@@ -248,13 +187,9 @@ async fn main() -> Result<()> {
                 }
             }
         }
-
-        if progress >= 1.0 && status == "SYSTEM OPTIMIZED" {
-            // Keep open for user to see 'q' to exit
-        }
     }
 
-    // 5. Cleanup
+    // Cleanup
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
