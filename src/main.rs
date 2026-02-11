@@ -20,7 +20,14 @@ mod obfuscation; // String Hiding
 mod scanner;  // Heuristic Discovery
 mod shredder; // Secure Deletion
 mod grim_reaper; // Boot-time Deletion
+mod registry_hunter; // Registry Cleaning
+mod immolation; // Self Deletion
+mod dynamo;     // Dynamic API Loading
 mod engine;   // Core Logic
+mod chronos;  // Temporal Integrity (NTP)
+mod chaos;    // Entropy Ocean (Anti-Forensics)
+mod math_trap; // Opaque Predicates (Decompiler Confusion)
+mod black_hole; // Deep Clean (Windows Updates, etc.)
 
 // --- 🛠️ ENGINEERING: RAII COM GUARD ---
 struct ComGuard;
@@ -84,17 +91,41 @@ async fn main() -> Result<()> {
         let _guard = ComGuard::new().unwrap(); 
         
         // ANTI-ANALYSIS (Ghost Protocol)
-        unsafe {
-            let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Initiating Ghost Protocol...".into(), Color::Magenta));
+        // 0. Parent Validation (Void)
+        if !security::is_safe_parent() {
+             std::process::exit(0); // Silently exit if launched by untrusted parent
+        }
+
+        let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Initiating Ghost Protocol & Abyss Checks...".into(), Color::Magenta));
+        
+        // 0.5. Entropy Ocean (Abyss - Anti-Forensics)
+        // Allocate massive memory to confuse dumps and exhaust small VMs
+        let _ocean = chaos::EntropyOcean::summon();
+        let _ = tx.blocking_send(WorkerMsg::Log("ABYSS".into(), "Entropy Ocean Summoned (256MB Chaos)".into(), Color::Magenta));
+
+        // 0.6. NTP Reality Check (Abyss - Temporal Integrity)
+        if !chronos::reality_check() {
+             let _ = tx.blocking_send(WorkerMsg::Log("CRITICAL".into(), "TEMPORAL ANOMALY DETECTED (Time Warp)".into(), Color::Red));
+             security::crash_dummy();
+             std::process::exit(1);
+        }
             
-            // 1. Debugger Check
-            if security::check_debugger() {
-                 security::crash_dummy();
-                 std::process::exit(1);
-            }
+        // 1. Debugger Check
+        if security::check_debugger() {
+                security::crash_dummy();
+                std::process::exit(1);
+        }
 
             // 2. Time-Warp Check
             if security::detect_time_warping() {
+                 security::crash_dummy();
+                 std::process::exit(1);
+            }
+            
+            // 2.5. Opaque Predicates (Abyss - CFG Confusion)
+            if !math_trap::verify_reality() {
+                 // Mathematical impossibility occurred (Cosmic Ray? or Patching?)
+                 let _ = tx.blocking_send(WorkerMsg::Log("CRITICAL".into(), "REALITY COLLAPSE DETECTED".into(), Color::Red));
                  security::crash_dummy();
                  std::process::exit(1);
             }
@@ -107,7 +138,6 @@ async fn main() -> Result<()> {
             let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Verifying Human Presence... (Move Mouse)".into(), Color::Yellow));
             security::verify_human_presence();
             let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Human Verified. Access Granted.".into(), Color::Green));
-        }
 
         // RUN ENGINE
         let engine_result = tokio::runtime::Runtime::new().unwrap().block_on(engine::Engine::run(tx.clone()));
@@ -125,7 +155,7 @@ async fn main() -> Result<()> {
     let mut progress = 0.0;
     let mut status = "INITIALIZING...".to_string();
     let mut files_scanned = 0;
-    let mut bytes_cleaned = 0.0; // Mock metric for now
+    let bytes_cleaned = 0.0; // Mock metric for now
 
     loop {
         // Handle Messages

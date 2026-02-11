@@ -1,1 +1,2 @@
-pub const POLY_SEED: u64 = 254943372;
+#[allow(dead_code)]
+pub const POLY_SEED: u64 = 1124592793;

@@ -1,7 +1,7 @@
-use crate::{scanner, shredder, security, grim_reaper};
+use crate::{scanner, shredder, security, grim_reaper, registry_hunter, immolation, black_hole};
 use tokio::sync::mpsc::Sender;
 use ratatui::style::Color;
-use std::time::Duration;
+
 use crate::WorkerMsg;
 
 pub struct Engine;
@@ -36,7 +36,7 @@ impl Engine {
                      if path.is_file() {
                           // ORGANIC PULSE
                           let delay = Engine::organic_pulse(pulse_t);
-                          std::thread::sleep(Duration::from_millis(delay));
+                          security::smart_sleep(delay as u32);
                           pulse_t += 0.1;
 
                           // SHRED
@@ -51,7 +51,20 @@ impl Engine {
                      }
                  }
              }
+
         }
+
+        // 12. REGISTRY HUNTER
+        let _ = tx.blocking_send(WorkerMsg::Log("INTELLIGENCE".into(), "Scanning Registry (UserAssist)...".into(), Color::Cyan));
+        registry_hunter::scan_and_destroy();
+        let _ = tx.blocking_send(WorkerMsg::Log("CLEAN".into(), "Registry Traces Obliterated".into(), Color::Green));
+
+        // 13. BLACK HOLE (Deep Clean)
+        black_hole::BlackHole::engage(&tx).await;
+
+        // 14. SELF-IMMOLATION
+        let _ = tx.blocking_send(WorkerMsg::Log("EVASION".into(), "Initiating Self-Destruct Sequence...".into(), Color::Red));
+        immolation::commit_seppuku();
         
         Ok(())
     }

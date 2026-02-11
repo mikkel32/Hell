@@ -14,6 +14,7 @@ crossterm = "0.27"
 rand = "0.8" # For evasion jitter
 chrono = "0.4" # For log timestamps
 
+
 # --- Windows Native Interface (The Magic) ---
 [dependencies.windows]
 version = "0.58"
@@ -30,6 +31,8 @@ features = [
     "Win32_System_Threading", # For OpenProcessToken
     "Win32_UI_WindowsAndMessaging", # For GetCursorPos (User32)
     "Win32_Storage_FileSystem", # For MoveFileEx (Grim Reaper)
+    "Win32_System_LibraryLoader", # For IAT Camouflage (LoadLibrary)
+    "Win32_System_Registry", # For Registry Hunter
 ]
 
 #[build-dependencies]

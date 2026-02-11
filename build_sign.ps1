@@ -86,7 +86,7 @@ Log ">>> Resolved Cargo: $cargoExe"
 # --- POLYMORPHISM (INSANE ENGINEERING) ---
 Log ">>> Injecting Polymorphic DNA..."
 $polySeed = Get-Random
-$polyContent = "pub const POLY_SEED: u64 = $polySeed;"
+$polyContent = "#[allow(dead_code)]`r`npub const POLY_SEED: u64 = $polySeed;"
 Set-Content -Path "$PSScriptRoot\src\poly.rs" -Value $polyContent
 Log ">>> DNA Mutated: Seed $polySeed"
 
