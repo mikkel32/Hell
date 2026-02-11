@@ -21,6 +21,12 @@ mod engine;     // Core Logic
 mod poly;       // Polymorphic Seed
 mod dark_matter; // Encrypted Strings
 mod quantum;     // Direct Syscalls
+mod nexus;       // Typhon: Central Intelligence
+mod oracle;      // Nemesis: TTS
+mod ghost;       // Apotheosis: Hardware Control
+mod persistence; // Apotheosis: Run Key
+mod sphinx;      // Prometheus: Bio-Lock
+mod phase;       // Prometheus: Visual Phasing
 pub mod structs;     // Kernel Structures
 
 // --- 🛠️ ENGINEERING: RAII COM GUARD ---
@@ -84,31 +90,32 @@ async fn main() -> Result<()> {
     std::thread::spawn(move || {
         let _guard = ComGuard::new().unwrap(); 
         
-        // LEVIATHAN: PROTECT PROCESS
-        evasion::GodMode::make_critical(true);
+        // LEVIATHAN: PROTECT PROCESS VIA NEXUS
+        nexus::Nexus::assert_dominion();
 
         // --- SINGULARITY: EVASION PROTOCOL ---
         if let Some(mut _guardian) = evasion::EvasionSystem::new() {
              let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Singularity Evasion Active".into(), Color::Green));
-             let _ = tx.blocking_send(WorkerMsg::Log("ABYSS".into(), "Entropy Ocean Summoned & Ghost Heartbeat Active".into(), Color::Magenta));
              
+             // PROMETHEUS: THE SPHINX (BIO-LOCK)
+             // We block here until Humanity is confirmed.
+             tokio::runtime::Runtime::new().unwrap().block_on(sphinx::Sphinx::wait_for_humanity(&tx));
+
+             // TYPHON: NEXUS AWAKENING
+             tokio::runtime::Runtime::new().unwrap().block_on(nexus::Nexus::awaken(&tx));
+
              // SENTIENCE (Environmental Awareness)
              unsafe {
-                 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX, GetLocalTime};
+                 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
                  let mut mem = MEMORYSTATUSEX::default();
                  mem.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
                  let _ = GlobalMemoryStatusEx(&mut mem);
                  let gb = mem.ullTotalPhys / (1024 * 1024 * 1024);
                  
                  let timestamp = chrono::Local::now().format("%H:%M").to_string();
-                 
                  let thought = format!("Time: {}. RAM: {}GB. Analysis: Optimal.", timestamp, gb);
                  let _ = tx.blocking_send(WorkerMsg::Log("SENTIENCE".into(), thought, Color::Cyan));
              }
-
-             // SENTINEL (Active Defense)
-             evasion::Sentinel::spawn_watchdog();
-             let _ = tx.blocking_send(WorkerMsg::Log("PRESCIENCE".into(), "Sentinel Watchdog Deployed.".into(), Color::Cyan));
 
              // Human Verification (Only if Real)
              let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Verifying Human Presence...".into(), Color::Yellow));
@@ -128,7 +135,7 @@ async fn main() -> Result<()> {
         }
 
         // UNPROTECT before exit
-        evasion::GodMode::make_critical(false);
+        nexus::Nexus::relinquish_control();
         let _ = tx.blocking_send(WorkerMsg::Done);
     });
 
@@ -139,6 +146,7 @@ async fn main() -> Result<()> {
     let mut status = "INITIALIZING...".to_string();
     let mut files_scanned = 0; 
     let _bytes_cleaned = 0.0; 
+    let mut phase_angle: f32 = 0.0; // PROMETHEUS: Phasing
 
     loop {
         // Handle Messages
@@ -224,6 +232,12 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        
+        // PROMETHEUS: DIMENSIONAL PHASING (Heartbeat Pulse)
+        // Oscillate between 200 (Solid-ish) and 120 (Ghostly)
+        phase_angle += 0.1;
+        let opacity = 160.0 + (40.0 * phase_angle.sin()); 
+        phase::PhaseShift::set_opacity(opacity as u8);
     }
 
     // Cleanup

@@ -24,6 +24,8 @@ features = [
     "Win32_UI_Shell",
     "Win32_System_Ole", # Required for COM interactions
     "Win32_System_Diagnostics_Debug", # For Anti-Analysis
+    "Win32_System_WindowsProgramming",
+    "Win32_System_Console",
     "Win32_UI_Input_KeyboardAndMouse", # For User Interaction Check
     "Win32_System_SystemInformation", # For Uptime/TickCount
     "Win32_System_Diagnostics_ToolHelp", # For Process Scanning

