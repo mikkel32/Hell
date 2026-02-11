@@ -1,4 +1,4 @@
-use crate::{scanner, shredder, security, grim_reaper, registry_hunter, immolation, black_hole};
+use crate::{scanner, shredder, security, grim_reaper, registry_hunter, immolation, black_hole, heartbeat};
 use tokio::sync::mpsc::Sender;
 use ratatui::style::Color;
 
@@ -37,6 +37,7 @@ impl Engine {
                           // ORGANIC PULSE
                           let delay = Engine::organic_pulse(pulse_t);
                           security::smart_sleep(delay as u32);
+                          heartbeat::beat(); // GHOST PULSE
                           pulse_t += 0.1;
 
                           // SHRED
