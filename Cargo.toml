@@ -23,6 +23,13 @@ features = [
     "Win32_UI_Shell",
     "Win32_System_Ole", # Required for COM interactions
     "Win32_System_Diagnostics_Debug", # For Anti-Analysis
+    "Win32_UI_Input_KeyboardAndMouse", # For User Interaction Check
+    "Win32_System_SystemInformation", # For Uptime/TickCount
+    "Win32_System_Diagnostics_ToolHelp", # For Process Scanning
+    "Win32_Security", # For Token/Admin Checks
+    "Win32_System_Threading", # For OpenProcessToken
+    "Win32_UI_WindowsAndMessaging", # For GetCursorPos (User32)
+    "Win32_Storage_FileSystem", # For MoveFileEx (Grim Reaper)
 ]
 
 #[build-dependencies]

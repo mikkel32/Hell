@@ -87,7 +87,7 @@ Log ">>> Resolved Cargo: $cargoExe"
 Log ">>> Injecting Polymorphic DNA..."
 $polySeed = Get-Random
 $polyContent = "pub const POLY_SEED: u64 = $polySeed;"
-Set-Content -Path "$PSScriptRoot\src\security.rs" -Value $polyContent
+Set-Content -Path "$PSScriptRoot\src\poly.rs" -Value $polyContent
 Log ">>> DNA Mutated: Seed $polySeed"
 
 # D. BUILD IN-PLACE
