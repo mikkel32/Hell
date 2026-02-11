@@ -36,6 +36,7 @@ features = [
     "Win32_System_Registry", # For Registry Hunter
     "Win32_System_SystemServices", # For Heisenberg (PE Parsing)
     "Win32_System_Kernel", # For GetThreadContext (Hardware Breakpoints)
+    "Win32_System_SystemInformation", # For GetTickCount64 (Heuristics)
 ]
 
 #[build-dependencies]

