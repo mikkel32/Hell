@@ -1,42 +1,38 @@
 [package]
-name = "kawaii_cleaner"
-version = "3.1.0"
+name = "kawaii_cleaner_pro"
+version = "5.1.0"
 edition = "2021"
-authors = ["System Utilities"]
-description = "Safe Temporary File Management Tool"
 
 [dependencies]
-# --- Safe Async Runtime ---
+# --- Core Runtime ---
 tokio = { version = "1.35", features = ["full"] }
 anyhow = "1.0"
 
 # --- UI Engine ---
-ratatui = "0.27"  # Keeping 0.27 for compatibility
+ratatui = "0.27" # Keeping specific version for compatibility
 crossterm = "0.27"
-humansize = "2.1"
+rand = "0.8" # For evasion jitter
+chrono = "0.4" # For log timestamps
 
-# --- System Intelligence ---
-sysinfo = "0.30"
-walkdir = "2.4"
-directories = "5.0"
-chrono = "0.4"
-
-# --- Windows Integration (Minimal & Safe) ---
+# --- Windows Native Interface (The Magic) ---
 [dependencies.windows]
 version = "0.58"
 features = [
     "Win32_Foundation",
-    "Win32_UI_Shell", # Only Shell APIs are needed for Recycle Bin
-    "Win32_System_SystemInformation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_System_Ole", # Required for COM interactions
+    "Win32_System_Diagnostics_Debug", # For Anti-Analysis
 ]
 
-[build-dependencies]
-winres = "0.1"
+#[build-dependencies]
+#winres = "0.1"
 
-# --- Release Profile ---
-# Optimization to make the binary smaller and cleaner
+# --- Build Optimization (Stealth Profile) ---
+# --- Standard Release Profile (Safe for AV) ---
 [profile.release]
-opt-level = "z"
-lto = true
-strip = true
-panic = "abort"
+opt-level = "z"      # Optimize for size (low memory)
+lto = false          # Explicitly disable LTO to prevent OOM
+strip = "debuginfo"  # Strip debug info but keep symbols for stability
+codegen-units = 1    # Slow, single-threaded codegen (stable)
+incremental = false

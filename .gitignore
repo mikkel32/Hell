@@ -1,3 +1,15 @@
 *.txt
+KawaiiBuild*
+KawaiiTemp*
 Cargo.lock
-target/
+/target
+**/*.rs.bk
+*.pdb
+*.log
+/build_temp
+/build_manual_error.log
+/check_v5_error.log
+/build_debug_v2.log
+/build_wrapper.bat
+/target_secure
+/build_internal
